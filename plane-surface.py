@@ -8,6 +8,8 @@ def main(args):
 
     setOriginToCurrentLocation()  # makes (X, Y, Z) = (0, 0, 0).  Uses G54 coordinates. Absolute.
 
+    return 0
+
     clearanceHeight = 10  # 10 mm.  The height to safely move the head over the workpiece.
 
     moveInAStraightLineRapidly(0, 0, clearanceHeight)  # raise the cutting tool 10mm
@@ -54,6 +56,7 @@ def main(args):
     cutter.x, cutter.y = 0, 0
     moveInAStraightLineRapidly(cutter.x, cutter.y, cutter.z)
 
+    return 0
 
 # noinspection PyUnboundLocalVariable
 if __name__ == '__main__':

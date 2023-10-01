@@ -59,7 +59,8 @@ def initializeGrbl():
     if line != b"[MSG:'$H'|'$X' to unlock]\r\n":
         print("Unexpected response " + str(line))
         sys.exit(1)
-
+    sendToGrbl("G90")  # (Set to absolute positioning)
+    sendToGrbl("G54")  # (Select G54 as the active WCS)
 
 def moveInAStraightLine(x, y, z, speed):
     sendToGrbl("F" + str(speed) + " G1 X" + str(x) + " Y" + str(y) + " Z" + str(z))
@@ -86,6 +87,10 @@ def sendToGrbl(line):  # line is aka BLOCK in g-code context.
         if line == b"ok\r\n":
             break
         print(str(line))
+
+
+def setOriginToCurrentLocation():
+    sendToGrbl("G10 L20 P1 X0 Y0 Z0")  # (Set the current position as the zero point for G54)
 
 
 def startSpindle(speed):
