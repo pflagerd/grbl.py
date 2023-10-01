@@ -1,0 +1,4 @@
+[Desktop Entry]
+Icon=text-html
+Type=Link
+URL[$e]=http://linuxcnc.org/docs/html/gcode/g-code.html#gcode:g54-g59.3

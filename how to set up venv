@@ -1,0 +1,7 @@
+pycharm has virtualenv installed.
+
+If no ./venv/ directory exists, create an empty one and create a new interpreter using that directory.
+
+File > Settings > Project: ... > Python Interpreter > Add Interpreter > Add Local Interpreter > Virtualenv Environment > New (point to the venv directory - which must be empty.)
+
+Then add the pyserial module, which strangely is imported as `import serial`.

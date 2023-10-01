@@ -1,0 +1,50 @@
+/home/oy753c/desktops/arduino/flower-frog/95x6.5mmAcrylicDisk/L19.05H3mmS1.2mmNail/venv/bin/python /home/oy753c/Desktop/flower-frog/95x6.5mmAcrylicDisk/L19.05H3mmS1.2mmNail/main.py
+b'\r\n'
+b"Grbl 1.1h ['$' for help]\r\n"
+b"[MSG:'$H'|'$X' to unlock]\r\n"
+sending $X\n
+3
+b'[MSG:Caution: Unlocked]\r\n'
+b'ok\r\n'
+sending $$\n
+3
+b'$0=10\r\n'        # Step pulse, microseconds
+b'$1=25\r\n'        # Step idle delay, milliseconds
+b'$2=0\r\n'         # Step port invert, XYZmask
+b'$3=0\r\n'         # Direction port invert, XYZmask
+b'$4=0\r\n'         # Step enable invert (0=Disable, 1=Invert)
+b'$5=0\r\n'         # Limit pins invert (0=Normally-Open, 1=Normally-Closed)
+b'$6=0\r\n'         # Probe pin invert (0=Normally-Open, 1=Normally-Closed)
+b'$10=3\r\n'        # Status report, ‘?’ status.  0=WCS position, 1=Machine position, 2= plan/buffer and WCS position, 3=plan/buffer and Machine position.
+b'$11=0.010\r\n'    # Junction deviation, mm
+b'$12=0.002\r\n'    # Arc tolerance, mm
+b'$13=0\r\n'        # Report in inches, (0=mm. 1=Inches)**
+b'$20=0\r\n'        # Soft limits, (0=Disable. 1=Enable, Homing must be enabled)
+b'$21=1\r\n'        # Hard limits, (0=Disable. 1=Enable)
+b'$22=1\r\n'        # Homing cycle, (0=Disable. 1=Enable)
+b'$23=0\r\n'        # Homing direction invert, XYZmask* Sets which corner it homes to.
+b'$24=25.000\r\n'   # Homing feed, mm/min
+b'$25=500.000\r\n'  # Homing seek, mm/min
+b'$26=250\r\n'      # Homing debounce, milliseconds
+b'$27=3.000\r\n'    # Homing pull-off, mm
+b'$30=10000\r\n'    # Max spindle speed, RPM
+b'$31=0\r\n'        # Min spindle speed, RPM
+b'$32=0\r\n'        # Laser mode, (0=Off, 1=On)
+b'$100=160.000\r\n' # Number of X steps to move 1mm
+b'$101=160.000\r\n' # Number of Y steps to move 1mm
+b'$102=160.000\r\n' # Number of Z steps to move 1mm
+b'$110=2000.000\r\n'# X Max rate, mm/min
+b'$111=2000.000\r\n'# Y Max rate, mm/min
+b'$112=2000.000\r\n'# Z Max rate, mm/min
+b'$120=300.000\r\n' # X Acceleration, mm/sec^2
+b'$121=300.000\r\n' # Y Acceleration, mm/sec^2
+b'$122=300.000\r\n' # Z Acceleration, mm/sec^2
+b'$130=420.000\r\n' # X Max travel, mm Only for Homing and Soft Limits.
+b'$131=310.000\r\n' # Y Max travel, mm Only for Homing and Soft Limits.
+b'$132=110.000\r\n' # Z Max travel, mm Only for Homing and Soft Limits.
+b'ok\r\n'
+
+* XYZmask is a value setting for the X Y and Z axes. Change if an axis is moving in the wrong direction. Value will be 0-7.
+** Reporting units are independent of the units set in the Gcode!
+
+Process finished with exit code 0
