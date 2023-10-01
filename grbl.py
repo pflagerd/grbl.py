@@ -59,6 +59,7 @@ def initializeGrbl():
     if line != b"[MSG:'$H'|'$X' to unlock]\r\n":
         print("Unexpected response " + str(line))
         sys.exit(1)
+    sendToGrbl("$X")  # Unlock
     sendToGrbl("G90")  # (Set to absolute positioning)
     sendToGrbl("G54")  # (Select G54 as the active WCS)
 
