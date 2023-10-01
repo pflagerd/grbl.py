@@ -1,7 +1,5 @@
 #!/usr/env python
 from grbl import *
-import keyboard
-import math
 
 def main(args):
     initializeGrbl()
@@ -42,12 +40,12 @@ def main(args):
 
     for passNumber in range(numberOfPasses):
         if passNumber % 2 == 0:  # passNumber counts from zero, so even passes are left-to-right
-            x = workPieceSize.x
+            cutter.x = workPieceSize.x
         else:
-            x = 0
+            cutter.x = 0
         moveInAStraightLine(cutter.x, cutter.y, cutter.z, 750)
         if passNumber != numberOfPasses - 1:
-            y += cutter.swatheWidth
+            cutter.y += cutter.swatheWidth
             moveInAStraightLine(cutter.x, cutter.y, cutter.z, 250)
 
     cutter.z = clearanceHeight    # raise the cutting tool to 10mm above the workpiece's original size
