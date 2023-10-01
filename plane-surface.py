@@ -34,6 +34,8 @@ def main(args):
     cutter.y = 0
     cutter.z = 0
 
+    cuttingSpeed = 750
+
     # Cut left-to-right, then right-to-left, and so on until done
     numberOfPasses = int(ceil(workPieceSize.y / cutter.swatheWidth + 1))  # The + 1 indicates that we are making an inclusive number of cuts (lines rather than spaces between the lines)
     cutter.swatheWidth *= (numberOfPasses - 1) / numberOfPasses
@@ -54,10 +56,10 @@ def main(args):
                 cutter.x = workPieceSize.x
             else:
                 cutter.x = 0
-            moveInAStraightLine(cutter.x, cutter.y, cutter.z, 750)
+            moveInAStraightLine(cutter.x, cutter.y, cutter.z, cuttingSpeed)
             if passNumber != numberOfPasses - 1:
                 cutter.y += cutter.swatheWidth
-                moveInAStraightLine(cutter.x, cutter.y, cutter.z, 375)  # move slower in Y direction
+                moveInAStraightLine(cutter.x, cutter.y, cutter.z, cuttingSpeed / 2)  # move slower in Y direction
 
         cutter.z = clearanceHeight    # raise the cutting tool to clearanceHeight above the current z-height, in case you want to do another (finishing) pass.
         moveInAStraightLineRapidly(cutter.x, cutter.y, cutter.z)
