@@ -21,79 +21,108 @@ def main(args):
 
     moveInAStraightLineRapidly(0, 0, clearanceHeight)  # move the cutting tool to 10mms
 
-    workPieceSize = type('', (), {})()
-    workPieceSize.x = 225
-    workPieceSize.y = 142
+    workPiece = type('', (), {})()
+    workPiece.origin = type('', (), {})()
+    workPiece.origin.x = 0
+    workPiece.origin.y = 0
+    workPiece.origin.z = 0
+    workPiece.size = type('', (), {})()
+    workPiece.size.x = 225
+    workPiece.size.y = 142
+
+    facingDepth = 0.2  # mm cutting depth
 
     cutter = type('', (), {})()
     cutter.diameter = 25  # 25 mm diameter
     cutter.overlapPercentage = 33  # 25 percent of diameter
     cutter.swatheWidth = cutter.diameter - cutter.diameter * cutter.overlapPercentage / 100  # width of cutter movement in y direction
-    cutter.x = 0
-    cutter.y = 0
-    cutter.z = 0
+    cutter.position = type('', (), {})()
+    cutter.position.x = 0
+    cutter.position.y = 0
+    cutter.position.z = -facingDepth
 
     cuttingSpeed = 300
+
+    cuttingPlane = type('', (), {})()
+    cuttingPlane.origin = type('', (), {})()
+    cuttingPlane.origin.x = -cutter.diameter
+    cuttingPlane.origin.y = 0
+    cuttingPlane.origin.z = 0
+    cuttingPlane.size = type('', (), {})()
+    cuttingPlane.size.x = workPiece.size.x + 2 * cutter.diameter
+    cuttingPlane.size.y = workPiece.size.y
 
     pattern = 'climb-cut'
 
     # Cut left-to-right, then right-to-left, and so on until done
-    numberOfPasses = int(ceil(workPieceSize.y / cutter.swatheWidth + 1))  # The + 1 indicates that we are making an inclusive number of cuts (lines rather than spaces between the lines)
+    numberOfPasses = int(ceil(workPiece.size.y / cutter.swatheWidth + 1))  # The + 1 indicates that we are making an inclusive number of cuts (lines rather than spaces between the lines)
     cutter.swatheWidth *= (numberOfPasses - 1) / numberOfPasses
     # except that we want to always end on a standard cut (not a climb cut), which means we want an odd number of passes
     if pattern == 'bidirectional' and numberOfPasses % 2 == 0:
         cutter.swatheWidth *= numberOfPasses / (numberOfPasses + 1)
         numberOfPasses += 1
 
-    facingDepth = 0.2  # 0.5mm cutting depth
-    cutter.z = -facingDepth
+    plungeSpeed = 50
+
     while True:
         startSpindle(10000)  # start spindle
 
-        if pattern == "climb-cut":
-            cutter.x = workPieceSize.x
-            moveInAStraightLineRapidly(cutter.x, cutter.y, clearanceHeight)
+        if pattern == "bidirectional":
+            cutter.position.x = cuttingPlane.origin.x
+        else:  # climb-cut
+            cutter.position.x = cuttingPlane.origin.x + cuttingPlane.size.x
+        cutter.position.y = cuttingPlane.origin.y
+        cutter.position.z = cuttingPlane.origin.z + clearanceHeight
+        moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
 
-        moveInAStraightLine(cutter.x, cutter.y, cutter.z + 1, 500)  # fairly quick move to 1 mm above workpiece
+        cutter.position.z = cuttingPlane.origin.z + 1
+        moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, 500)  # fairly quick move to 1 mm above workpiece
 
-        moveInAStraightLine(cutter.x, cutter.y, cutter.z, 50)  # cut slowly down into workpiece
+        cutter.position.z = cuttingPlane.origin.z
+        moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, plungeSpeed)  # cut slowly down
 
         for passNumber in range(numberOfPasses):
             if pattern == "bidirectional":
                 if passNumber % 2 == 0:  # passNumber counts from zero, so even passes are left-to-right
-                    cutter.x = workPieceSize.x
+                    cutter.position.x = cuttingPlane.origin.x + cuttingPlane.size.x
                 else:
-                    cutter.x = 0
-                moveInAStraightLine(cutter.x, cutter.y, cutter.z, cuttingSpeed)
+                    cutter.position.x = cuttingPlane.origin.x
+                moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, cuttingSpeed)
                 if passNumber != numberOfPasses - 1:
-                    cutter.y += cutter.swatheWidth
-                    moveInAStraightLine(cutter.x, cutter.y, cutter.z, cuttingSpeed / 2)  # move slower in Y direction
+                    cutter.position.y += cutter.swatheWidth
+                    moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, cuttingSpeed / 2)  # move slower in Y direction
             else:  # pattern = "climb-cut".  Cuts are from right to left
-                moveInAStraightLine(0, cutter.y, cutter.z, cuttingSpeed)
-                moveInAStraightLineRapidly(0, cutter.y, clearanceHeight)
+                cutter.position.x = cuttingPlane.origin.x
+                moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, cuttingSpeed)
+
+                cutter.position.z = cuttingPlane.origin.z + clearanceHeight
+                moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
                 if passNumber != numberOfPasses - 1:
-                    cutter.y += cutter.swatheWidth
-                    moveInAStraightLineRapidly(cutter.x, cutter.y, clearanceHeight)
+                    cutter.position.y += cutter.swatheWidth
+                    cutter.position.x = cuttingPlane.position.x + cuttingPlane.size.x
+                    moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
 
-                    moveInAStraightLine(cutter.x, cutter.y, cutter.z + 1, 500)  # fairly quick move to 1 mm above workpiece
+                    cutter.position.z = cuttingPlane.origin.z + 1
+                    moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, 500)  # fairly quick move to 1 mm above workpiece
 
-                    moveInAStraightLine(cutter.x, cutter.y, cutter.z, 100)  # cut slowly down into workpiece
+                    cutter.position.z = cuttingPlane.origin.z
+                    moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, 100)  # cut slowly down into workpiece
 
-        cutter.z = dustShoeClearanceHeight    # raise the cutting tool to clearanceHeight above the current z-height, in case you want to do another (finishing) pass.
+        cutter.position.z = dustShoeClearanceHeight    # raise the cutting tool to clearanceHeight above the current z-height, in case you want to do another (finishing) pass.
         if pattern == 'climb-cut:':
-            moveInAStraightLineRapidly(0, cutter.y, cutter.z)
+            moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
         else:
-            moveInAStraightLineRapidly(cutter.x, cutter.y, cutter.z)
+            moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
         stopSpindle()
-        cutter.x, cutter.y = 0, 0
-        moveInAStraightLineRapidly(cutter.x, cutter.y, cutter.z)
+        cutter.position.x = workPiece.origin.x
+        cutter.position.y = workPiece.origin.y
+        moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
         response = input("Do another pass? y/n ")
         if response not in ["y", "Y"]:
             break
-        cutter.z = -facingDepth
 
-    cutter.z = dustShoeClearanceHeight
-    moveInAStraightLineRapidly(cutter.x, cutter.y, cutter.z)
+    cutter.position.z = dustShoeClearanceHeight
+    moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
 
     return 0
 
