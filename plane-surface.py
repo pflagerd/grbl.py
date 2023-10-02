@@ -39,17 +39,17 @@ def main(args):
     cutter.position = type('', (), {})()
     cutter.position.x = 0
     cutter.position.y = 0
-    cutter.position.z = -facingDepth
+    cutter.position.z = 0
 
     cuttingSpeed = 300
 
     cuttingPlane = type('', (), {})()
     cuttingPlane.origin = type('', (), {})()
-    cuttingPlane.origin.x = -cutter.diameter
+    cuttingPlane.origin.x = -cutter.diameter / 2
     cuttingPlane.origin.y = 0
-    cuttingPlane.origin.z = 0
+    cuttingPlane.origin.z = -facingDepth
     cuttingPlane.size = type('', (), {})()
-    cuttingPlane.size.x = workPiece.size.x + 2 * cutter.diameter
+    cuttingPlane.size.x = workPiece.size.x + cutter.diameter
     cuttingPlane.size.y = workPiece.size.y
 
     pattern = 'climb-cut'
@@ -99,7 +99,7 @@ def main(args):
                 moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
                 if passNumber != numberOfPasses - 1:
                     cutter.position.y += cutter.swatheWidth
-                    cutter.position.x = cuttingPlane.position.x + cuttingPlane.size.x
+                    cutter.position.x = cuttingPlane.origin.x + cuttingPlane.size.x
                     moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
 
                     cutter.position.z = cuttingPlane.origin.z + 1
