@@ -29,7 +29,7 @@ def main(args):
     workPiece.size.y = 90
 
     cutter = type('', (), {})()
-    cutter.radius = 12.5  # 25 mm diameter
+    cutter.radius = 11.8  # 23.6 mm diameter
     cutter.overlapPercentage = 33  # percent of cutter.radius
     cutter.swatheWidth = cutter.radius - cutter.radius * cutter.overlapPercentage / 100  # width of cutter movement in y direction
     cutter.position = type('', (), {})()
@@ -68,6 +68,7 @@ def main(args):
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z + 1)
 
         moveInAStraightLineRapidly(0, 0, 0)  # raise the cutting tool to its starting position.
+        moveInAStraightLineRapidly(0, 0, dustShoeClearanceHeight)  # raise the cutting tool to its starting position.
         stopSpindle()
 
         response = input("Do another pass? y/N ")
