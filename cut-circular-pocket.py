@@ -64,13 +64,13 @@ def main(args):
             cutter.position.x = cutter.position.y = 0
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z + 1)
 
+        moveInAStraightLineRapidly(0, 0, 0)  # raise the cutting tool to its starting position.
         stopSpindle()
 
         response = input("Do another pass? y/N ")
         if response not in ["y", "Y"]:
             break
 
-    moveInAStraightLineRapidly(0, 0, 0)  # raise the cutting tool to its starting position.
     return 0
 
 # noinspection PyUnboundLocalVariable
