@@ -5,7 +5,7 @@ from math import *
 def main(args):
     initializeGrbl()
 
-    print("Move cutting head to center of pocket. Cutter blade should be 0.1mm above material surface.")
+    print("Move cutting head to center of pocket. Cutter blade should be just touching material surface.")
     input("Hit enter when ready. ")
 
     setOriginToCurrentLocation()  # makes (X, Y, Z) = (0, 0, 0).  Uses G54 coordinates. Absolute.
