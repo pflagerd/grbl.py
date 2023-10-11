@@ -63,6 +63,10 @@ def initializeGrbl():
     sendToGrbl("G90")  # (Set to absolute positioning)
     sendToGrbl("G54")  # (Select G54 as the active WCS)
 
+def moveInAnArcClockwise(x, y, z, i, j, speed):
+    sendToGrbl("F" + str(speed) + " G2 X" + str(x) + " Y" + str(y) + " Z" + str(z) + " I" + str(i) + " J" + str(j))
+
+
 def moveInAStraightLine(x, y, z, speed):
     sendToGrbl("F" + str(speed) + " G1 X" + str(x) + " Y" + str(y) + " Z" + str(z))
 
