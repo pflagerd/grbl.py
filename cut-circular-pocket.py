@@ -12,10 +12,11 @@ def main(args):
 
     printGrblStatus()
 
+    dustShoeClearanceHeight = 30
     cuttingSpeed = 200
     plungeSpeed = 50
     plungeDepth = 1
-    depth = 8
+    depth = 10
     radius = 30.5
 
     workPiece = type('', (), {})()
@@ -36,7 +37,7 @@ def main(args):
     cutter.position.y = 0
     cutter.position.z = 0
 
-    if radius < cutter.diameter / 2:
+    if radius < cutter.radius:
         print("Cannot cut a radius (" + str(radius) + ") smaller than the cutter radius (" + str(cutter.diameter / 2) + ")")
 
     moveInAStraightLineRapidly(0, 0, dustShoeClearanceHeight)  # raise the cutting tool 50mm for dust shoe.
@@ -53,12 +54,14 @@ def main(args):
             cutter.position.z = max(cutter.position.z - plungeDepth, -depth)
             moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, plungeSpeed)
 
+            lastCutRadius = cutRadius
             while cutRadius < radius:
                 cutRadius = min(cutRadius + cutter.swatheWidth, radius)
 
-                cutter.position.x += (cutRadius - cutter.radius)
-                moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, (cutRadius - cutter.radius) / 2, 0, cuttingSpeed)
+                cutter.position.x = (cutRadius - cutter.radius)
+                moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, (cutRadius - lastCutRadius) / 2, 0, cuttingSpeed)
                 moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, -(cutRadius - cutter.radius), 0, cuttingSpeed)
+                lastCutRadius = cutRadius
 
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z + 1)
             cutter.position.x = cutter.position.y = 0
