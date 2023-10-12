@@ -15,10 +15,11 @@ def main(args):
     printGrblStatus()
 
     dustShoeClearanceHeight = 30
-    cuttingSpeed = 300
-    plungeSpeed = 20
+    cuttingSpeed = 400
+    plungeSpeed = 40
     plungeDepth = 1
-    depth = 10
+    depth = 8        firstCut = True
+
     radius = 30.5
 
     workPiece = type('', (), {})()
@@ -52,8 +53,8 @@ def main(args):
         cutter.position.x = cutter.position.y = cutter.position.z = 0
         moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z + 1)
 
-        firstCut = True
         while cutter.position.z > -depth:
+            firstCut = True
             cutRadius = cutter.radius
             cutter.position.z = max(cutter.position.z - plungeDepth, -depth)
             # moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, plungeSpeed)
@@ -64,13 +65,13 @@ def main(args):
 
                 cutter.position.x = (cutRadius - cutter.radius)
                 moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, (cutRadius - lastCutRadius) / 2, 0, plungeSpeed if firstCut else cuttingSpeed / 2)
-                moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, -(cutRadius - cutter.radius), 0, cuttingSpeed / 5 if firstCut else cuttingSpeed)
+                moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, -(cutRadius - cutter.radius), 0, cuttingSpeed / 3 if firstCut else cuttingSpeed)
 
                 firstCut = False
                 lastCutRadius = cutRadius
 
-            moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, -(cutRadius - cutter.radius),
-                                 0, cuttingSpeed)
+            if cutter.position.z == -depth:
+                moveInAnArcClockwise(cutter.position.x, cutter.position.y, cutter.position.z, -(cutRadius - cutter.radius), 0, cuttingSpeed)
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z + 1)
             cutter.position.x = cutter.position.y = 0
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
