@@ -18,8 +18,7 @@ def main(args):
     cuttingSpeed = 400
     plungeSpeed = 40
     plungeDepth = 1
-    depth = 8        firstCut = True
-
+    depth = 8
     radius = 30.5
 
     workPiece = type('', (), {})()
