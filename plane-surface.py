@@ -17,7 +17,7 @@ def main(args):
     moveInAStraightLineRapidly(0, 0, dustShoeClearanceHeight)  # raise the cutting tool 50mm for dust shoe.
     input("Put dust shoe on cutter.  Hit enter when ready. ")
 
-    clearanceHeight = 10  # 10 mm.  The height to safely move the head over the workpiece.
+    clearanceHeight = 5  # 10 mm.  The height to safely move the head over the workpiece.
 
     moveInAStraightLineRapidly(0, 0, clearanceHeight)  # move the cutting tool to 10mms
 
@@ -27,13 +27,13 @@ def main(args):
     workPiece.origin.y = 0
     workPiece.origin.z = 0
     workPiece.size = type('', (), {})()
-    workPiece.size.x = 225
-    workPiece.size.y = 142
+    workPiece.size.x = 410
+    workPiece.size.y = 290
 
-    facingDepth = 0.2  # mm cutting depth
+    facingDepth = 0.0  # mm cutting depth
 
     cutter = type('', (), {})()
-    cutter.diameter = 25  # 25 mm diameter
+    cutter.diameter = 19  # mm diameter
     cutter.overlapPercentage = 33  # 25 percent of diameter
     cutter.swatheWidth = cutter.diameter - cutter.diameter * cutter.overlapPercentage / 100  # width of cutter movement in y direction
     cutter.position = type('', (), {})()
@@ -41,7 +41,7 @@ def main(args):
     cutter.position.y = 0
     cutter.position.z = 0
 
-    cuttingSpeed = 300
+    cuttingSpeed = 600
 
     cuttingPlane = type('', (), {})()
     cuttingPlane.origin = type('', (), {})()
@@ -52,7 +52,7 @@ def main(args):
     cuttingPlane.size.x = workPiece.size.x + cutter.diameter
     cuttingPlane.size.y = workPiece.size.y
 
-    pattern = 'climb-cut'
+    pattern = 'climb-cut' # 'bidirectional`
 
     # Cut left-to-right, then right-to-left, and so on until done
     numberOfPasses = int(ceil(workPiece.size.y / cutter.swatheWidth + 1))  # The + 1 indicates that we are making an inclusive number of cuts (lines rather than spaces between the lines)
@@ -62,7 +62,7 @@ def main(args):
         cutter.swatheWidth *= numberOfPasses / (numberOfPasses + 1)
         numberOfPasses += 1
 
-    plungeSpeed = 50
+    plungeSpeed = 20
 
     while True:
         startSpindle(10000)  # start spindle
