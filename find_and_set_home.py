@@ -4,7 +4,13 @@ import sys
 
 port = "/dev/ttyUSB0"
 
-if __name__ == '__main__':
+top_right_z_up =    b'0'
+top_left_z_up =     b'1'
+bottom_right_z_up = b'2'
+bottom_left_z_up =  b'3'
+top_right_z_down =  b'4'
+
+def find_and_set_home(corner=bottom_left_z_up):
     grblController = serial.Serial(port, baudrate=115200)
     line = grblController.readline()
     print(str(line))
@@ -55,16 +61,14 @@ if __name__ == '__main__':
         if line == b"ok\r\n":
             break
 
-
-    # 0 top right z-up
-    # 1 top left z-up
-    # 2 bottom right z-up
-    # 3 bottom left z-up
-    # 4 top right z-down
-    direction = b'3'
-    HOME_DIRECTION_INVERT = b'$23=' + direction
-    print("sending " + str(HOME_DIRECTION_INVERT) + "\\n")  # Status report query.
-    grblController.write(HOME_DIRECTION_INVERT + b'\n')
+    # b'0' top right z-up
+    # b'1' top left z-up
+    # b'2' bottom right z-up
+    # b'3' bottom left z-up
+    # b'4' top right z-down
+    home_direction_invert = b'$23=' + corner
+    print("sending " + str(home_direction_invert) + "\\n")  # Status report query.
+    grblController.write(home_direction_invert + b'\n')
     while True:
         line = grblController.readline()
         print(str(line))
@@ -133,3 +137,5 @@ if __name__ == '__main__':
     grblController.close()
 
 
+if __name__ == '__main__':
+    find_and_set_home()
