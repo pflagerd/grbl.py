@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Candle2 Literate Program</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        .iframe-container {
+            display: flex;
+            justify-content: space-between;
+            width: 95%;
+            height: 95vh;
+            border: 1px solid #ccc;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .left-iframe {
+            width: 59%;
+        }
+
+        .right-iframe {
+            width: 39%;
+        }
+
+        iframe {
+            height: 100%;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+<div class="iframe-container">
+    <iframe src="document.html" class="left-iframe"></iframe>
+    <iframe src="document.commentary.html" class="right-iframe"></iframe>
+</div>
+</body>
+</html>

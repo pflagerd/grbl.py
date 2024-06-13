@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Candle2</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 3vmax;
+        }
+
+        code {
+            font-size: 118%;
+            background-color: #CCCCCC;
+            padding: 0 0.5vmax;
+        }
+
+        pre {
+            margin: 0 3vmax;
+            /* display: inline-block; */
+            background-color: #BBBBBB;
+            padding: 1vmax;
+            border-radius: 5px; /* Optional: adds rounded corners */
+        }
+
+        strike {
+            color: red;
+        }
+
+        .changed-block {
+            position: relative;
+            padding-left: 1.25vmax; /* Adjust to ensure the text doesn't overlap with the bar */
+        }
+
+        .changed-block::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0.25vmax;
+            background-color: red; /* Change the color as needed */
+        }
+
+        .requirement {
+            color: #BB0000;
+            font-family: Arial, sans-serif;
+            font-weight: bold;
+        }
+
+        .sedgewick {
+            font-family: LiberationSerif, serif; font-size: 110%;
+            margin: 0 3vmax;
+        }
+
+        .keyword {
+            color: blue;
+        }
+
+        .new-text {
+            color: green;
+        }
+
+        .todo {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1><a href='javascript:window.open("https://github.com/pflagerd/candle2", "Candle2 on github.com", "width=${screenWidth * 40 / 100}, height=${screenHeight * 70 / 100}")'>Candle2 (EverFree CAM software for the Genmitsu 4030XL)</a></h1>
+
+    <br>
+    <h2>Hardware Entities</h2>
+    <img style="width: 100%;" src="Hardware Entities.svg" alt="missing important diagram">
+    <p>It may not be entirely obvious, but the Genmitsu router is controlled by the little black box right next to it, which
+    is in-turn connected by a USB cable to the Linux machine which is running Candle2.</p>
+
+    <br>
+    <h2>Software Entities</h2>
+    <image style="width: 100%;" src=""
+    <p class=todo>There's only one, and that's candle2.</p>
+
+    <h2>UI Entities</h2>
+    <img style="width: 100%;" src="UI Entities.svg" alt="missing important diagram">
+    <p class=todo>There's a lot going on here.  Not quite done.</p>
+
+
+
+
+
+<!--    <div  class="sedgewick"><span class="requirement" title="R1 here means Requirement number 1">1.3.31</span>-->
+<!--        Implement a nested class <code>DoublyLinkedNode</code> for building doubly-linked lists, where-->
+<!--        each node contains a reference to the item preceding it and the item following it in the-->
+<!--        list (null if there is no such item). Then implement static methods for the following-->
+<!--        tasks: insert at the beginning, insert at the end, remove from the beginning, remove-->
+<!--        from the end, insert before a given node, insert after a given node, and remove a given-->
+<!--        node.-->
+<!--    </div>-->
+<!--    <p>I am going to assume that the statement above represents a contract.  Sedgewick is the contractor.-->
+<!--        I am the contracted. If I deliver in accordance with this contract's content, contractor will pay me.  If I do not-->
+<!--        deliver in accordance with this contract's content, contractor will not pay me.</p>-->
+<!--    <p>Being a businessman as well as programmer, I would first like to know if the contract can be fulfilled as written.</p>-->
+<!--    <p>To decide whether the contract can be fulfilled as written, I need to know what the contractor means by a doubly-linked list.-->
+<!--        In other words, what operations are allowed, and what properties are expected, and what performance benchmarks must be achieved.-->
+<!--    </p>-->
+<!--    <div class="sedgewick"><span class="requirement" title="R1 here means Requirement number 1">1.3.31 R1</span> Implement class <code>DoublyLinkedList</code> which shall-->
+<!--        <ol style="margin: 0;">-->
+<!--            <li>comprise one or more <code>DoublyLinkedNode</code>s sequentially linked to one another.</li>-->
+<!--            <li>be able to return the "first" <code>DoublyLinkedNode</code>, if one exists</li>-->
+<!--            <li>be able to return the "last" <code>DoublyLinkedNode</code>, if one exists</li>-->
+<!--            <li>allow a new "first" <code>DoublyLinkedNode</code> to be added</li>-->
+<!--            <li>allow a new "last" <code>DoublyLinkedNode</code> to be added</li>-->
+<!--        </ol>-->
+<!--    </div>-->
+
+<!--    <p>For clarification's sake I remove some relative pronouns from the <span class="requirement">1.3.31</span> requirement statement:-->
+<!--    </p>-->
+<!--    <div class="sedgewick"><span class="requirement" title="R2 here means Requirement number 2. Revision A means the Ath modification of Requirement 2">1.3.31 R2 Revision A</span>-->
+<!--        Implement a nested class <code>DoublyLinkedNode</code> for building <code>DoublyLinkedList</code>s, where-->
+<!--        each [given] <code>DoublyLinkedNode</code> contains a reference to the <code>DoublyLinkedNode</code> preceding the [given]-->
+<!--        <code>DoublyLinkedNode</code> and the <code>DoublyLinkedNode</code> following the [given] <code>DoublyLinkedNode</code> in the-->
+<!--        list (null if there is no such [preceding and/or following] <code>DoublyLinkedNode</code>). Then implement static-->
+<!--        methods for the following tasks: insert at the beginning, insert at the end, remove from the beginning, remove-->
+<!--        from the end, insert before a given <code>DoublyLinkedNode</code>, insert after a given <code>DoublyLinkedNode</code>, and-->
+<!--        remove a given <code>DoublyLinkedNode</code>.-->
+<!--    </div>-->
+<!--    <p>I now break the contract down into several specific numbered sentences:-->
+<!--    </p>-->
+<!--    <div class="sedgewick"><span class="requirement" title="R2 here means Requirement number 2. Revision A means the Ath modification of Requirement 2">1.3.31 R2 Revision B</span> Implement a nested class <code>DoublyLinkedNode</code> for building <code>DoublyLinkedList</code>s lists.-->
+<!--        <ol style="margin: 0;">-->
+<!--            <li>Each <code>DoublyLinkedNode</code> contains a reference to the <code>DoublyLinkedNode</code> ...-->
+<!--                <ol type="a">-->
+<!--                    <li>preceding it in the list...</li>-->
+<!--                    <li>following it in the list...</li>-->
+<!--                </ol>-->
+<!--                ... xor <code class="keyword">None</code> if there is no such preceding xor following <code>DoublyLinkedNode</code>).-->
+<!--            </li>-->
+<!--            <li>Implement static methods for the following tasks:-->
+<!--                <ol type="a">-->
+<!--                    <li>insert at the beginning</li>-->
+<!--                    <li>insert at the end</li>-->
+<!--                    <li>remove from the beginning</li>-->
+<!--                    <li>remove from the end</li>-->
+<!--                    <li>insert before a given <code>DoublyLinkedNode</code></li>-->
+<!--                    <li>insert after a given <code>DoublyLinkedNode</code></li>-->
+<!--                    <li>remove a given <code>DoublyLinkedNode</code>.</li>-->
+<!--                </ol>-->
+<!--            </li>-->
+<!--        </ol>-->
+<!--    </div>-->
+<!--    <p>The exercise asks me to implement a "nested class".  Nested in what?  Searching backward in the book yields-->
+<!--        no answer, nor does searching the book website: <a href='javascript:window.open("https://algs4.cs.princeton.edu/home/", "Sedgewick", "width=${screenWidth * 40 / 100}, height=${screenHeight * 70 / 100}")'>Sedgewick Book Site</a>-->
+<!--        So I guess I get to choose.  So how to choose?</p>-->
+<!--    <p>I adopt <a href="https://www.kaushik.net/avinash/occams-razor-what/" title="entia non sunt multiplicanda praeter necessitatem (entities should not multiply without necessity)" target="_blank">Ockham's Razor</a> for our design of the class <code>DoublyLinkedNode</code> and let our-->
+<!--        design inform the decision about how to design the containing class.</p>-->
+<!--    <p>In fact, in honor of Ockham, let's <em>not</em> use the traditional term "next" as an alias for "following", nor "prev"-->
+<!--        as an alias for "preceding" as this would be creating new entities unnecessarily.-->
+<!--        for no other reason than "I like them".  Let's use the same terms as Sedgewick not only in order to minimize entities,-->
+<!--        but also to minimize the chance that Sedgewick might think-->
+<!--        differently than I, namely assuming that "next" is an alias for "preceding" and "prev" as an alias for "following".-->
+<!--        As unlikely as this might seem, this often comes up in lawsuits where the parties have-->
+<!--        not defined their terms clearly enough to know whether the <span title="the one who is contracted">contracted</span>-->
+<!--        delivered what the <span title="the one who contracts">contractor</span> wanted.</p>-->
+<!--    <p>I now make sure I get paid and define a checklist of specific cases which I will use to prove that our-->
+<!--        <code>DoublyLinkedNode</code> implementation meets the requirements.</p>-->
+<!--    <p>The first thing our <code>DoublyLinkedNode</code> must be able to do is "<span class="sedgewick">insert at the beginning</span>".-->
+<!--        Begs the question "what does <i>insert</i> mean?" and also "<i>at the beginning</i> of what?"-->
+<!--    </p>-->
+<!--    <p>So far our universe of discourse contains one or more <code>DoublyLinkedNode</code>s, each of which contains a <code>preceding</code>,-->
+<!--        <code>following</code> and <code>payload</code> attribute.-->
+<!--        The <code>preceding</code>, <code>following</code> attributes each refer to a <code>DoublyLinkedNode</code> or <code class="keyword">None</code>.-->
+<!--        While it is not written (in the contract) anywhere, we've asserted (modified the contract) there is a <code>payload</code>,-->
+<!--        but we've not specified anything about <code>payload</code> other than it exists and by our code (not by contract?)-->
+<!--        we've asserted it can be <code class="keyword">None</code>.-->
+<!--    </p>-->
+<!--    <p>I can't see anything in the language of our contract which explicitly defines either "beginning" or "end", so I-->
+<!--        am going to ignore the parts of the contract using these two terms and focus on the three clauses which contain-->
+<!--        enough information to code them: "insert before a given node", "insert after a given node", and "remove a given node".-->
+<!--    </p>-->
+
+<!--    <div>-->
+<!--    <h2>1.3.31 Implement a class <code>DoublyLinkedList</code> which shall</h2>-->
+<!--    <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        pass</pre>-->
+<!--    <h3>1. comprise one or more <code>DoublyLinkedNode</code>s sequentially linked to one another.</h3>-->
+<!--        <p>See <code>DoublyLinkedNode</code> implementation below.</p>-->
+<!--    <h3>2. be able to return the "first" <code>DoublyLinkedNode</code>, if one exists</h3>-->
+<!--    <div>-->
+<!--    <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None</pre>-->
+<!--    </div>-->
+<!--    <h3>3. be able to return the "last" <code>DoublyLinkedNode</code>, if one exists</h3>-->
+<!--    <div>-->
+<!--    <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None</pre>-->
+<!--    </div>-->
+<!--    <h3>4. allow a new "first" <code>DoublyLinkedNode</code> to be added</h3>-->
+<!--    <div>-->
+<!--    <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+<!--    <h3>5. allow a new "last" <code>DoublyLinkedNode</code> to be added</h3>-->
+<!--        <div>-->
+<!--            <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    def add_last(self, node: DoublyLinkedNode):-->
+<!--        pass</pre>-->
+<!--        </div>-->
+<!--    </div>-->
+
+
+<!--    <strike><p id="0000001" class="todo changed-block">The contract states that I should write static methods for each of the clauses.  <span class="new-text">I think this is a bad idea.  Not object-oriented. I am very sure it's a bad idea for <code>DoublyLinkedNode</code>.</span>-->
+<!--    </p></strike>-->
+<!--    <h2>1.3.31 <span>R2 Revision B</span> Implement a nested class DoublyLinkedNode for building <span>DoublyLinkedList</span>s </h2>-->
+<!--    <pre>class DoublyLinkedNode:-->
+<!--    def __init__(self):-->
+<!--        pass</pre>-->
+<!--    <p>We can see now that the code above allows the user to construct <code>DoublyLinkedList</code>s using <code>add_first()</code> ior <code>add_last()</code>.</p>-->
+
+<!--    <h3>1. Each DoublyLinkedNode called x contains a reference to the DoublyLinkedNode preceding x in the list (null if there is no such [preceding and/or following] DoublyLinkedNode).</h3>-->
+<!--    <pre>class DoublyLinkedNode:-->
+<!--    def __init__(self):-->
+<!--        self.preceding = None</pre>-->
+
+<!--    <h3>2. Each DoublyLinkedNode called x [also] contains a reference to the DoublyLinkedNode following x in the list (null if there is no such [preceding and/or following] DoublyLinkedNode).</h3>-->
+<!--    <pre>class DoublyLinkedNode:-->
+<!--    def __init__(self):-->
+<!--        self.preceding = None-->
+<!--        self.following = None</pre>-->
+<!--    <p>Of course, this <code>DoublyLinkedNode</code> is not very interesting in that it contains no payload.  Let's add a payload.</p>-->
+<!--    <pre id="0000002" title="id=0000002">class DoublyLinkedNode:-->
+<!--    def __init__(self):-->
+<!--        self.payload = None-->
+<!--        self.preceding = None-->
+<!--        self.following = None</pre>-->
+
+<!--    <h3>3. Implement static methods for the following tasks: insert at the beginning, insert at the end, remove from the beginning, remove-->
+<!--        from the end, insert before a given node, insert after a given node, and remove a given-->
+<!--        node.</h3>-->
+
+<!--    <h3>3a. insert at the beginning</h3>-->
+<!--    <p>"beginning" must refer to an attribute of <code>DoublyLinkedList</code>s</p>-->
+<!--    <div>-->
+<!--        <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    def add_last(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+
+<!--    <h3>3b. insert at the end</h3>-->
+<!--    <p><span>"end" must refer to an attribute of a <code>DoublyLinkedList</code>, not yet implemented.</span></p>-->
+<!--    <div>-->
+<!--        <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    def add_last(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_end(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+
+<!--    <h3>3c. remove from the beginning</h3>-->
+<!--    <p><span>"beginning" must refer to an attribute of a <code>DoublyLinkedList</code>, not yet implemented.</span></p>-->
+<!--    <div>-->
+<!--        <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    def add_last(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_end(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def remove_from_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_remove):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+
+<!--    <h3>3d. remove from the end</h3>-->
+<!--    <p><span>"end" must refer to an attribute of <code>a DoublyLinkedList</code>, not yet implemented.</span></p>-->
+<!--    <div>-->
+<!--    <pre>class DoublyLinkedList:-->
+<!--    def __init__(self):-->
+<!--        self.first = None-->
+<!--        self.last = None-->
+
+<!--    def add_first(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    def add_last(self, node: DoublyLinkedNode):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def insert_at_the_end(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_insert):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def remove_from_the_beginning(<span>doublyLinkedList: DoublyLinkedList</span>, node_to_remove):-->
+<!--        pass-->
+
+<!--    @staticmethod-->
+<!--    def remove_from_the_end(node_to_remove):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+
+<!--    <div id="3e">-->
+<!--    <h3>3e. insert before a given node</h3>-->
+<!--    <div class="changed-block">-->
+<!--    <pre>-->
+<!--<span style="opacity: 40%;" class="new-text">class DoublyLinkedNode:-->
+<!--    .-->
+<!--    .-->
+<!--    .</span>-->
+<!--    <strike>@staticmethod</strike>-->
+<!--    def insert_before<span class="new-text">_self</span>(<strike>a_given_node, </strike>node_to_insert):-->
+<!--        pass</div>-->
+<!--    </div>-->
+
+<!--    <div id="3f">-->
+<!--    <h3>3f. insert after a given node</h3>-->
+<!--    <div class="changed-block">-->
+<!--    <pre>-->
+<!--<span style="opacity: 40%;" class="new-text">class DoublyLinkedNode:-->
+<!--    .-->
+<!--    .-->
+<!--    .</span>-->
+<!--    <strike>@staticmethod</strike>-->
+<!--    def insert_after<span class="new-text">_self</span>(<strike>a_given_node, </strike>node_to_insert):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+<!--    </div>-->
+
+<!--    <div id="3g">-->
+<!--    <h3>3g. remove a given node</h3>-->
+<!--    <div class="changed-block">-->
+<!--    <pre>-->
+<!--<span style="opacity: 40%;" class="new-text">class DoublyLinkedNode:-->
+<!--    .-->
+<!--    .-->
+<!--    .</span>-->
+<!--    <strike>@staticmethod</strike>-->
+<!--    def remove<span class="new-text">_self</span>(<strike>a_given_node</strike>):-->
+<!--        pass</pre>-->
+<!--    </div>-->
+<!--    </div>-->
+</body>
+</html>

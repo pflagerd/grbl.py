@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Candle2 Commentary</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 3vmax;
+        }
+
+        code {
+            font-size: 118%;
+            background-color: #CCCCCC;
+            padding: 0 0.5vmax;
+        }
+
+        pre {
+            margin: 0;
+            /* display: inline-block; */
+            background-color: #BBBBBB;
+            padding: 1vmax;
+            border-radius: 5px; /* Optional: adds rounded corners */
+            overflow-x: auto;
+            position: relative;
+        }
+
+        strike {
+            color: red;
+        }
+
+        .changed-block {
+            position: relative;
+            padding-left: 1.25vmax; /* Adjust to ensure the text doesn't overlap with the bar */
+        }
+
+        .changed-block::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0.25vmax;
+            background-color: red; /* Change the color as needed */
+        }
+
+        .commentary-block {
+            margin-bottom: 5vmax;
+        }
+
+        .indent {
+            margin-left: 3vw;
+        }
+
+        .requirement {
+            color: #BB0000;
+            font-family: Arial, sans-serif;
+            font-weight: bold;
+        }
+
+        .sedgewick {
+            font-family: LiberationSerif, serif; font-size: 110%;
+            margin: 0 3vmax;
+        }
+
+        .keyword {
+            color: blue;
+        }
+
+        .new-text {
+            color: green;
+        }
+
+        .timestamp {
+            font-size: xx-small;
+            font-weight: bold;
+            border-top: solid darkgray thin;
+            padding: 0.3vh 0;
+        }
+
+        .todo {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+<h1 style="color: lightgray;">Commentary</h1>
+
+<div class="commentary-block">
+    <p class="timestamp new-text">Tue Jun 11 05:11:24 PM PDT 2024 (1e697894a1781cad865d446685a10f0cdd8c6567)</p>
+    <div class="todo">I found a case where data is sent directly to the serial port, rather than being echoed to <code>txtConsole</code>:
+        <p></p>
+        <pre><a href="https://github.com/pflagerd/candle2/blob/1e697894a1781cad865d446685a10f0cdd8c6567/frmmain.cpp#L628" target="_blank"><span style="font-size: smaller; position: absolute; top: 3px; left: 3px; font-style: italic;">frmmain.cpp 628-631</span></a>
+// Reset: 0x18 == Ctrl-X == CAN(cel)
+if (m_Protocol == PROT_GRBL1_1) {
+    <b></b>SerialIf_Write(QByteArray(1, (char) 0x18)); // Ctrl-X  TODO: DPP: Shouldn't this go through "command"?</b>
+} else if (m_Protocol == PROT_GRIP) {
+</pre>
+    </div><br>
+    <div class="todo">Find all my TODO: DPP: comments and document them here.</div>
+    <br>
+    <div class="todo">I wrote <a href="http://gitlab.pflager.net/cagd/grbl.py/-/blob/b515ce82bd28e2a658087bd258a85aafe98c908b/simplest-terminal-ever.py" target="_blank"><code>simplest-terminal-ever.py</code></a> so I could test the 4030XL's GRBL implementation by running it from within PyCharm.  When <code>simplest-terminal-ever.py</code> connected to the 4030XL's serial port, it emitted the
+        following output (although the red color was added later to show what was received by the serial port):</div>
+    <pre>
+/home/oy753c/desktops/toadstool-logo/grbl.py/venv/bin/python -X pycache_prefix=/home/oy753c/.cache/JetBrains/PyCharmCE2024.1/cpython-cache /home/oy753c/.local/share/pycharm-community-2024.1.2/plugins/python-ce/helpers/pydev/pydevd.py --multiprocess --qt-support=auto --client 127.0.0.1 --port 41873 --file /home/oy753c/desktops/toadstool-logo/grbl.py/simplest-terminal-ever.py
+Connected to pydev debugger (build 241.17011.127)
+<span style="color: red;">b'\r\n'
+b"Grbl 1.1h ['$' for help]\r\n"
+b"[MSG:'$H'|'$X' to unlock]\r\n"</span>
+</pre>
+
+</div>
+
+<div class="commentary-block">
+    <p class="timestamp">Mon Jun  3 06:05:49 PM PDT 2024 (0143ac0c17e61fa26184cbf9ac689195251e5415)</p>
+    <div class="todo">I found that two timers were turned on at the same time as the serial port's timer was turned on, making the initial state difficult to handle.  So I temporarily commented them out:
+        <p></p>
+        <pre><a href="https://github.com/pflagerd/candle2/blob/1e697894a1781cad865d446685a10f0cdd8c6567/frmmain.cpp#L320" target="_blank"><span style="font-size: smaller; position: absolute; top: 3px; left: 3px; font-style: italic;">frmmain.cpp 320-327</span></a>
+// Connect timers
+<b>// TODO: DPP: These two timers should not be turned on until serial port is initialized.
+// connect(&m_timerSpindleUpdate, SIGNAL(timeout()), this, SLOT(onTimerUpdateSpindleParser()));
+// connect(&m_timerStateQuery, SIGNAL(timeout()), this, SLOT(onTimerStatusQuery()));</b>
+
+connect(&m_timerRead, SIGNAL(timeout()), this, SLOT(onProcessData()));
+
+connect(&m_timerSend, SIGNAL(timeout()), this, SLOT(onSendSerial()));</pre>
+    </div><br>
+    <strike title="Moved to commentary-block Tue Jun 11 05:11:24 PM PDT 2024 (1e697894a1781cad865d446685a10f0cdd8c6567)"><div class="todo">I really need to find all my TODO: DPP: comments and document them here.</div></strike>
+</div>
+<div class="commentary-block">
+    <p class="timestamp">Mon Jun  3 06:05:49 PM PDT 2024</p>
+    <p>I think the first state in <code>frmMain::ProcessGRBL1_1()</code> is waiting for the "\r\n" from the 4030XL.</p>
+</div>
+<div class="commentary-block">
+    <p class="timestamp">Sun Jun  2 10:08:12 AM PDT 2024</p>
+    <div class="todo">
+        <div>TODO: One of the immediate problems I have with candle2 is that the default machine coordinate origin on the
+            Genmitsu 4030 seems to be the upper right corner of the work surface.  I want it to be the lower left corner of the work surface.
+            I know how to do this using GRBL's "$23=3" command, but I'm unsure where to put this in the code.
+            <div style="margin-top: 1em;" class="indent">One possible implementation of this is to create a state machine which waits for a response
+                to the <code>btnConnect</code> button, and when the response is received
+                sends a $23=3 command to force that mode, and then waits for a response indicating that it was received.  I could also query all the
+                parameters with $$, parse the result and then set $23 only if needed.
+                <div style="margin-top: 1em; color: black;" class="indent">
+                    I'm thinking that I should investigate how to await the <a href="https://github.com/pflagerd/grbl/blob/e5e10b5b0d1d571da7ff85b4265b4773736aef01/doc/markdown/interface.md#L102:~:text=Grbl%20X.Xx%20%5B%27%24%27%20for%20help%5D%20%3A%20Welcome%20message" target="_blank">"Grbl Welcome message"</a>
+                    <br>
+                    <p>Here's the file in which the serial port gets read from: <code><a href="https://github.com/pflagerd/candle2/blob/4d8efc25080f76c363548fdd3cc6ddc08f5d824c/frmmain_processresponse.cpp#L39">frmmain_processresponse.cpp</a></code></p>
+                    <p>Here's the start of a function that gets invoked by a timer, and which processes all serial data received from the 4030XL:</p>
+                    <pre>void frmMain::ProcessGRBL1_1() {
+while (SerialIf_CanReadLine()) {
+    QString data = SerialIf_ReadLine().trimmed();
+
+    if (debug)
+        qDebug().nospace() << __FILE__ << " (" << __LINE__ << ") frmMain::ProcessGRBL1_1(): SerialIf_ReadLine().trimmed() returned:" << data;
+
+    if (m_isAwaitingGrblVersionString) { // DPP: is the system in a state where it's waiting for the Grbl Version String which is
+                                         // displayed whenever the Grbl processor has been (re-)initialized.
+        if (!wasGrblVersionStringReceived(data)) // does <code style="font-size: 100%;">data</code> above contain a Grbl Version String which looks something like "Grbl 1.1h ['$' for help]"
+            continue;
+        else {
+            m_isAwaitingGrblVersionString = false;
+            <span title="This is not the timer that triggers the call to void frmMain::ProcessGRBL1_1().  It sends ? messages to the 4030XL every so often.">m_timerStateQuery.setInterval(m_settings->queryStateTime());</span>
+        }
+    }</pre>
+                <br>
+                    <p>I think <code>m_isAwaitingGrblVersionString</code> is a flag indicating that Candle is waiting for
+                        the <a href="https://github.com/pflagerd/grbl/blob/e5e10b5b0d1d571da7ff85b4265b4773736aef01/doc/markdown/interface.md#L102:~:text=Grbl%20X.Xx%20%5B%27%24%27%20for%20help%5D%20%3A%20Welcome%20message" target="_blank">"Grbl Welcome message"</a> mentioned above</p>
+                    <p class="todo">I think <code>m_isAwaitingGrblVersionString</code> belongs with "Grbl Welcome message"
+                        in the <a href="../ontology/lexicon.json" target="blank">candle ontology lexicon.</a></p>
+                    <p class="todo">Came up with a notion of a URI scheme to identify a specific range of lines/characters in a text document.
+                        See <a href="https://chatgpt.com/c/77d7c432-05a1-4aad-9679-0dedf649b426">here</a>.
+                    Could use that in conjunction with github's persistent links to identify parts of particular versions
+                        of particular documents when we talk about them in here.  Might be a better alternative than Chrome' gross text=thing.  I can't figure out how to get the right-click option
+                        in Chrome to do capture the highlighted link text=thing.</p>
+                    <p>Before modifying the candle code, I did some experimentation with the GRBL controller.  I created a brain-dead simple terminal program to use to talk to the 4030XL via /dev/ttyUSB0
+                    and discovered that the very first thing the 4030XL sends over the serial port when the simple terminal program connects is NOT the "Grbl Welcome message", but a CRLF.  This means there's
+                    another state even before the "Grbl Welcome message".</p>
+                    <p class="todo">On the subject of the brain-dead simple terminal program mentioned above, it should go into the ontology lexicon, and its URI is github-like and looks like this:
+                        <code>git@zax.pflager.net/<span title="Computer Aided Geometric Design">cagd</span>/<span title="G-Code Reader & Interpreter.">grbl.py</span>/blob/c2d1f85817547a100d7cb16ced635e37d37a7762/simplest-terminal-ever.py</code></p>
+                    <p class="todo">It would be cool if a processor could walk through the HTML in a document like this one and add hyperlinks and titles to terms defined in the ontology reference.  It would also be cool if there was such a thing as a
+                    multi-link, where you could choose from multiple links based on context.  For example, if you hover over grbl.py you could see where its authoritative repository is located, what it's readme.md describes it as, you could open its source for browsing, etc. etc.</p>
+                    <p class="todo">It would be insanely great if I could open a VNC session on the remote candle instance, as well as open a camera feed or two.  What about even being able to turn the 4030XL on, off and its dust collector on, off also</p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+<div class="commentary-block">
+    <p class="timestamp">Fri May 31 04:56:24 PM PDT 2024</p>
+    <h3 style="color: lightgray;">Hardware Entities</h3>
+    <p class="todo">TODO: Label the significant parts of the 4030XL (x, y, z axes), spindle motor, etc.</p>
+    <p class="todo">TODO: A video of the thing in operation with some labels might also be super-duper.</p>
+    <p class="todo">TODO: It would be amazing if the image and video had active hovers which did cool stuff like pop up
+        a video showing how the user would move the carriage etc.</p>
+    <p class="todo">TODO: Common workflows would also be amazing.  In particular the initialization one where
+    candle configures itself/and the machine for first-time operation.</p>
+    <p class="todo">TODO: Common hazards addressed by the design could be documented also.</p>
+    <p class="todo">TODO: Candle2 should be self-updating installable as an AppImage</p>
+    <p class="todo">TODO: Also installable as a ubuntu package, fedora package, arch (pacman) package, snap and flatpak.</p>
+    <p class="todo">TODO: It should self-configure.  Finding such things as serial port not accessible because of permissions and making it so (prompting for sudo password if necessary)</p>
+
+    <br>
+    <h3 style="color: lightgray;">Software Entities</h3>
+    <p class="todo">TODO: Not complete obviously</p>
+
+    <br>
+    <h3 style="color: lightgray;">UI Entities</h3>
+    <p class="todo">TODO: Not all UI elements are labelled.</p>
+</div>
+</body>
+</html>
