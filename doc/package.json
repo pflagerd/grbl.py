@@ -3,6 +3,6 @@
     "live-server": "^1.2.2"
   },
   "scripts": {
-    "run": "live-server --browser=activity-chromium"
+    "run": "live-server --browser=activity-chromium --ignore=**/node_modules/**"
   }
 }
