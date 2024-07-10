@@ -53,6 +53,22 @@ def find_and_set_home(corner=bottom_left_z_up):
         if line == b"ok\r\n":
             break
 
+    print("sending $I\\n")  # View Build Info
+    grblController.write(b'$I\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        if line == b"ok\r\n":
+            break
+
+    print("sending $N\\n")  # View saved start up code
+    grblController.write(b'$N\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        if line == b"ok\r\n":
+            break
+
     print("sending ?\\n")  # Status report query.
     grblController.write(b'?\n')
     while True:
