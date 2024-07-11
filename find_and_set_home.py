@@ -77,6 +77,14 @@ def find_and_set_home(corner=bottom_left_z_up):
         if line == b"ok\r\n":
             break
 
+    print("sending $X\\n")  # Unlock so that M2 will not fail with error 9
+    grblController.write(b'$X\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        if line == b"ok\r\n":
+            break
+
     print("sending M2\\n")  # End job to make sure the spindle is off
     grblController.write(b'M2\n')
     while True:
