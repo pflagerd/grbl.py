@@ -77,6 +77,22 @@ def find_and_set_home(corner=bottom_left_z_up):
         if line == b"ok\r\n":
             break
 
+    print("sending M2\\n")  # End job to make sure the spindle is off
+    grblController.write(b'M2\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        if line == b"ok\r\n":
+            break
+
+    print("sending S1000\\n")  # Set the default spindle speed to maximum
+    grblController.write(b'S1000\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        if line == b"ok\r\n":
+            break
+
     # b'0' top right z-up
     # b'1' top left z-up
     # b'2' bottom right z-up
