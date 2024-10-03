@@ -162,8 +162,17 @@ def find_and_set_home(corner=bottom_left_z_up):
     while True:
         line = grblController.readline()
         print(str(line))
+        # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
+        if b'MPos' in line:
+            statusLines = line.decode('utf-8').split('|')
+            indexOfColon = statusLines[1].index(':')
+            machineCoordinates = statusLines[1][indexOfColon + 1:].split(',')
+            print('machineCoordinates == ', machineCoordinates)
         if line == b"ok\r\n":
             break
+
+
+
 
     VIEW_GCODE_PARSER_STATE = b'$G'
     print('sending ' + str(VIEW_GCODE_PARSER_STATE) + '\\n')  # Status report query.
