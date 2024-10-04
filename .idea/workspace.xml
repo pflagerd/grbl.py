@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/grbl.py.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/grbl.py.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Figure out how to extract machine coordinates from status report">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/find_and_set_home.py" beforeDir="false" afterPath="$PROJECT_DIR$/find_and_set_home.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -18,10 +16,10 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "customColor": "",
-  "associatedIndex": 1
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 1
+}</component>
   <component name="ProjectId" id="2mtflUrLPzdsv8t6LRXwT6NhHm0" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -29,9 +27,9 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
-    "Python.find_and_set_home.executor": "Debug",
+    "Python.find_and_set_home.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
+    "settings.editor.selected.configurable": "preferences.pluginManager"
   }
 }]]></component>
   <component name="SharedIndexes">
@@ -50,7 +48,20 @@
       <option name="presentableId" value="Default" />
       <updated>1727900945032</updated>
     </task>
+    <task id="LOCAL-00001" summary="Figure out how to extract machine coordinates from status report">
+      <option name="closed" value="true" />
+      <created>1727917494214</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1727917494214</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Figure out how to extract machine coordinates from status report" />
+    <option name="LAST_COMMIT_MESSAGE" value="Figure out how to extract machine coordinates from status report" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>

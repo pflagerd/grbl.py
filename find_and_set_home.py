@@ -171,9 +171,6 @@ def find_and_set_home(corner=bottom_left_z_up):
         if line == b"ok\r\n":
             break
 
-
-
-
     VIEW_GCODE_PARSER_STATE = b'$G'
     print('sending ' + str(VIEW_GCODE_PARSER_STATE) + '\\n')  # Status report query.
     grblController.write(VIEW_GCODE_PARSER_STATE + b'\n')
@@ -184,7 +181,11 @@ def find_and_set_home(corner=bottom_left_z_up):
             break
 
     grblController.close()
+    return machineCoordinates
 
 
 if __name__ == '__main__':
-    find_and_set_home()
+    machineCoordinateList = []
+    for i in range(10):
+        machineCoordinateList.append(find_and_set_home())
+    print(machineCoordinateList)
