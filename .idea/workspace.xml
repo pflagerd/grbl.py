@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Ten runs of lower left homing.">
-      <change afterPath="$PROJECT_DIR$/home_and_move_to_default_lower_left_origin.py" afterDir="false" />
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/get_status.py" beforeDir="false" afterPath="$PROJECT_DIR$/get_status.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -82,13 +80,22 @@
       <option name="project" value="LOCAL" />
       <updated>1728139530326</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Prepare to set lower left origin">
+      <option name="closed" value="true" />
+      <created>1728140138555</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1728140138555</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Figure out how to extract machine coordinates from status report" />
     <MESSAGE value="Ten runs of lower left homing." />
-    <option name="LAST_COMMIT_MESSAGE" value="Ten runs of lower left homing." />
+    <MESSAGE value="Prepare to set lower left origin" />
+    <option name="LAST_COMMIT_MESSAGE" value="Prepare to set lower left origin" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
