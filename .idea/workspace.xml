@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Figure out how to extract machine coordinates from status report">
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Ten runs of lower left homing.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/find_and_set_home.py" beforeDir="false" afterPath="$PROJECT_DIR$/find_and_set_home.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/probe_machine_coordinates_of_all_limits.py" beforeDir="false" afterPath="$PROJECT_DIR$/probe_machine_coordinates_of_all_limits.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -28,6 +28,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "Python.find_and_set_home.executor": "Run",
+    "Python.probe_machine_coordinates_of_all_limits.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "settings.editor.selected.configurable": "preferences.pluginManager"
   }
@@ -56,12 +57,21 @@
       <option name="project" value="LOCAL" />
       <updated>1727917494214</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Ten runs of lower left homing.">
+      <option name="closed" value="true" />
+      <created>1728071666444</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1728071666444</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Figure out how to extract machine coordinates from status report" />
-    <option name="LAST_COMMIT_MESSAGE" value="Figure out how to extract machine coordinates from status report" />
+    <MESSAGE value="Ten runs of lower left homing." />
+    <option name="LAST_COMMIT_MESSAGE" value="Ten runs of lower left homing." />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
