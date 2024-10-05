@@ -35,14 +35,6 @@ if __name__ == '__main__':
     #     print("Unexpected response " + str(line))
     #     sys.exit(1)
 
-    print("sending ?\\n")  # Status report query.
-    grblController.write(b'?\n')
-    while True:
-        line = grblController.readline()
-        print(str(line))
-        if line == b"ok\r\n":
-            break
-
     print("sending $$\\n")  # Display Grbl Settings.
     grblController.write(b'$$\n')
     while True:
@@ -65,6 +57,20 @@ if __name__ == '__main__':
     while True:
         line = grblController.readline()
         print(str(line))
+        if line == b"ok\r\n":
+            break
+
+    print("sending ?\\n")  # Status report query.
+    grblController.write(b'?\n')
+    while True:
+        line = grblController.readline()
+        print(str(line))
+        # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
+        if b'MPos' in line:
+            statusLines = line.decode('utf-8').split('|')
+            indexOfColon = statusLines[1].index(':')
+            machineCoordinates = statusLines[1][indexOfColon + 1:].split(',')
+            print('machineCoordinates == ', machineCoordinates)
         if line == b"ok\r\n":
             break
 
