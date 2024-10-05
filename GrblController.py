@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 
 class GrblController(serial.Serial):
-    HomingPositions = SimpleNamespace()
+    class HomingPositions:
+        topRightZUp = b'0'
+        topLeftZUp = b'1'
+        bottomRightZUp = b'2'
+        bottomLeftZUp = b'3'
+        topRightZDown = b'4'
 
     def __init__(self, portDeviceName="/dev/ttyUSB0", portBaudRate=115200):
-        self.HomingPositions.topRightZUp    = b'0'
-        self.HomingPositions.topLeftZUp     = b'1'
-        self.HomingPositions.bottomRightZUp = b'2'
-        self.HomingPositions.bottomLeftZUp  = b'3'
-        self.HomingPositions.topRightZDown  = b'4'
 
         self.homingPosition = self.HomingPositions.bottomLeftZUp
 
@@ -37,7 +37,8 @@ class GrblController(serial.Serial):
             sys.exit(1)
 
     def __del__(self):
-        super().close()
+        if super():
+            super().close()
 
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
