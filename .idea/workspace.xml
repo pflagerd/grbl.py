@@ -37,6 +37,8 @@
     "Python.get_status.executor": "Run",
     "Python.probe_machine_coordinates_of_all_limits.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "/home/oy753c/desktops/neon-candle/grbl.py",
     "settings.editor.selected.configurable": "preferences.pluginManager"
   }
 }]]></component>
@@ -101,12 +103,12 @@
     <breakpoint-manager>
       <breakpoints>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/find_and_set_home.py</url>
+          <url>file://$PROJECT_DIR$/find_home_and_set_origin.py</url>
           <line>166</line>
           <option name="timeStamp" value="2" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/find_and_set_home.py</url>
+          <url>file://$PROJECT_DIR$/find_home_and_set_origin.py</url>
           <line>165</line>
           <option name="timeStamp" value="3" />
         </line-breakpoint>

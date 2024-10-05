@@ -10,7 +10,8 @@ bottom_right_z_up = b'2'
 bottom_left_z_up =  b'3'
 top_right_z_down =  b'4'
 
-def find_and_set_home(corner=bottom_left_z_up):
+
+def find_home_and_set_origin(corner=bottom_left_z_up):
     grblController = serial.Serial(port, baudrate=115200)
     line = grblController.readline()
     print(str(line))
@@ -187,5 +188,5 @@ def find_and_set_home(corner=bottom_left_z_up):
 if __name__ == '__main__':
     machineCoordinateList = []
     for i in range(10):
-        machineCoordinateList.append(find_and_set_home())
+        machineCoordinateList.append(find_home_and_set_origin())
     print(machineCoordinateList)
