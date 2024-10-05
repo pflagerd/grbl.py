@@ -39,6 +39,7 @@ class GrblController(serial.Serial):
     def __del__(self):
         super().close()
 
+    # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
         home_direction_invert = b'$23=' + homingPosition
