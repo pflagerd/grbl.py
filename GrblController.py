@@ -53,12 +53,12 @@ class GrblController(serial.Serial):
             if b'MPos' in line:
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
-                machineCoordinates = statusLines[1][indexOfColon + 1:].split(',')
-                print('machineCoordinates == ', machineCoordinates)
+                self.machineCoordinates = statusLines[1][indexOfColon + 1:].split(',')
+                print('machineCoordinates == ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
-        self.machineCoordinates = machineCoordinates
-        return machineCoordinates
+
+        return self.machineCoordinates
 
     def moveToMachineCoordinates(self, x=None, y=None, z=None, feedRate=100):
         machineCoordinates = self.getMachineCoordinates()
