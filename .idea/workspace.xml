@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin" />
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/GrblController.py" beforeDir="false" afterPath="$PROJECT_DIR$/GrblController.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -18,6 +22,7 @@
     </option>
   </component>
   <component name="Git.Settings">
+    <option name="PREVIEW_PUSH_ON_COMMIT_AND_PUSH" value="false" />
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="ProjectColorInfo">{
@@ -34,14 +39,15 @@
     "Python.find_and_set_home.executor": "Run",
     "Python.get_status.executor": "Run",
     "Python.probe_machine_coordinates_of_all_limits.executor": "Run",
-    "Python.run_homing_cycle.executor": "Run",
+    "Python.run_homing_cycle.executor": "Debug",
+    "Python.run_homing_cycle_and_move_to_default_lower_left_origin.executor": "Debug",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "master",
     "last_opened_file_path": "/home/oy753c/desktops/neon-candle/grbl.py",
-    "settings.editor.selected.configurable": "preferences.pluginManager"
+    "settings.editor.selected.configurable": "vcs.Git"
   }
 }]]></component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Python.run_homing_cycle_and_move_to_default_lower_left_origin">
     <configuration name="run_homing_cycle" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="grbl.py" />
       <option name="ENV_FILES" value="" />
@@ -64,8 +70,31 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="run_homing_cycle_and_move_to_default_lower_left_origin" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="grbl.py" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.run_homing_cycle_and_move_to_default_lower_left_origin" />
         <item itemvalue="Python.run_homing_cycle" />
       </list>
     </recent_temporary>
@@ -118,13 +147,13 @@
       <option name="project" value="LOCAL" />
       <updated>1728140138555</updated>
     </task>
-    <task id="LOCAL-00005" summary="Prepare to set lower left origin">
+    <task id="LOCAL-00005" summary="moveToMachineCoordinates()">
       <option name="closed" value="true" />
-      <created>1728172465820</created>
+      <created>1728173828092</created>
       <option name="number" value="00005" />
       <option name="presentableId" value="LOCAL-00005" />
       <option name="project" value="LOCAL" />
-      <updated>1728172465820</updated>
+      <updated>1728173828092</updated>
     </task>
     <option name="localTasksCounter" value="6" />
     <servers />
@@ -132,6 +161,7 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Figure out how to extract machine coordinates from status report" />
     <MESSAGE value="Ten runs of lower left homing." />
+    <MESSAGE value="moveToMachineCoordinates()" />
     <MESSAGE value="Prepare to set lower left origin" />
     <option name="LAST_COMMIT_MESSAGE" value="Prepare to set lower left origin" />
   </component>
@@ -149,9 +179,24 @@
           <option name="timeStamp" value="3" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/run_homing_cycle.py</url>
-          <line>3</line>
-          <option name="timeStamp" value="4" />
+          <url>file://$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py</url>
+          <line>7</line>
+          <option name="timeStamp" value="6" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/GrblController.py</url>
+          <line>80</line>
+          <option name="timeStamp" value="8" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/GrblController.py</url>
+          <line>87</line>
+          <option name="timeStamp" value="9" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/GrblController.py</url>
+          <line>83</line>
+          <option name="timeStamp" value="10" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
