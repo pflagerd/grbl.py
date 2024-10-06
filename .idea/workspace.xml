@@ -4,12 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/GrblController.py" beforeDir="false" afterPath="$PROJECT_DIR$/GrblController.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/perform_homing_cycle_and_move_to_default_lower_left_origin.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run_homing_cycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_homing_cycle.py" afterDir="false" />
-    </list>
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -123,7 +118,15 @@
       <option name="project" value="LOCAL" />
       <updated>1728140138555</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="Prepare to set lower left origin">
+      <option name="closed" value="true" />
+      <created>1728172465820</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1728172465820</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
