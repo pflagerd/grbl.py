@@ -60,7 +60,7 @@ class GrblController(serial.Serial):
         self.machineCoordinates = machineCoordinates
         return machineCoordinates
 
-    def moveToMachineCoordinates(self, x=None, y=None, z=None, feedRate=400):
+    def moveToMachineCoordinates(self, x=None, y=None, z=None, feedRate=100):
         machineCoordinates = self.getMachineCoordinates()
 
         if x is None and y is None and z in None:
@@ -84,9 +84,6 @@ class GrblController(serial.Serial):
             print(str(line))
             if line in [b"ok\r\n", b""]:
                 break
-
-        if line != b"ok\r\n":
-            return None  # TODO: DPP: Maybe I should return the current machine coordinates, since I won't be moving.
 
         # get current machine coordinates
         return self.getMachineCoordinates()
