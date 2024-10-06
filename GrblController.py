@@ -13,6 +13,7 @@ class GrblController(serial.Serial):
         topRightZDown = b'4'
 
     def __init__(self, portDeviceName="/dev/ttyUSB0", portBaudRate=115200):
+        self.spindleMotorSpeed = 0
         self.homingPosition = self.HomingPositions.bottomLeftZUp
         self.machineCoordinates = None
 
@@ -38,6 +39,10 @@ class GrblController(serial.Serial):
 
         self.getMachineCoordinates()
 
+        # TODO: DPP: Set spindle motor to 0
+
+        # TODO: DPP: Set origin to lower left corner
+
     def __del__(self):
         if super():  # TODO: ChatGPT suggested super().close() and it crashed so I added the if.  I don't about this.
             super().close()
@@ -58,21 +63,19 @@ class GrblController(serial.Serial):
             if line == b"ok\r\n":
                 break
 
-        return self.machineCoordinates
+        return list(self.machineCoordinates)
 
-    def moveToMachineCoordinates(self, x=None, y=None, z=None, feedRate=100):
-        machineCoordinates = self.getMachineCoordinates()
-
+    def cutToMachineCoordinates(self, x=None, y=None, z=None, feedRate=400):
         if x is None and y is None and z in None:
             print("At least one of x, y and z must be set")
-            return machineCoordinates
+            return self.getMachineCoordinates()
 
-        gcode = f"G90 G53 G0 F{feedRate}"
+        gcode = f"G90 G53 G1 F{feedRate}"
         if x is not None:
             gcode += f" X{x}"
         if y is not None:
             gcode += f" Y{y}"
-        if x is not None:
+        if z is not None:
             gcode += f" Z{z}"
 
         gcode += "\r\n"
@@ -84,6 +87,14 @@ class GrblController(serial.Serial):
             print(str(line))
             if line in [b"ok\r\n", b""]:
                 break
+
+        if line == b'ok\r\n':
+            if x is not None:
+                self.machineCoordinates[0] = x
+            if y is not None:
+                self.machineCoordinates[1] = y
+            if z is not None:
+                self.machineCoordinates[2] = z
 
         # get current machine coordinates
         return self.getMachineCoordinates()
@@ -107,3 +118,29 @@ class GrblController(serial.Serial):
             print(str(line))
             if line == b"ok\r\n":
                 break
+
+    def startSpindleMotor(self, speed=1000):
+        self.spindleMotorSpeed = speed
+        grbl = f'S{speed} M3\r\n'
+        print(grbl)
+        super().write(grbl.encode('utf-8'))
+        while True:
+            line = super().readline()
+            print(str(line))
+            if line in [b"ok\r\n", b'']:
+                break
+
+        return speed
+
+    def stopSpindleMotor(self, speed=0):
+        self.spindleMotorSpeed = speed
+        grbl = f'S{speed} M5\r\n'
+        print(grbl)
+        super().write(grbl.encode('utf-8'))
+        while True:
+            line = super().readline()
+            print(str(line))
+            if line in [b"ok\r\n", b'']:
+                break
+
+        return speed
