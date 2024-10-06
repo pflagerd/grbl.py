@@ -4,11 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Prepare to set lower left origin">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/GrblController.py" beforeDir="false" afterPath="$PROJECT_DIR$/GrblController.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" afterDir="false" />
-    </list>
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="moveToMachineCoordinates()" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -22,6 +18,7 @@
     </option>
   </component>
   <component name="Git.Settings">
+    <option name="PREVIEW_PUSH_ON_COMMIT_AND_PUSH" value="false" />
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="ProjectColorInfo">{
@@ -33,18 +30,18 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;Python.find_and_set_home.executor&quot;: &quot;Run&quot;,
-    &quot;Python.get_status.executor&quot;: &quot;Run&quot;,
-    &quot;Python.probe_machine_coordinates_of_all_limits.executor&quot;: &quot;Run&quot;,
-    &quot;Python.run_homing_cycle.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;/home/oy753c/desktops/neon-candle/grbl.py&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Python.find_and_set_home.executor": "Run",
+    "Python.get_status.executor": "Run",
+    "Python.probe_machine_coordinates_of_all_limits.executor": "Run",
+    "Python.run_homing_cycle.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "/home/oy753c/desktops/neon-candle/grbl.py",
+    "settings.editor.selected.configurable": "vcs.Git"
   }
-}</component>
+}]]></component>
   <component name="RunManager">
     <configuration name="run_homing_cycle" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="grbl.py" />
@@ -122,14 +119,23 @@
       <option name="project" value="LOCAL" />
       <updated>1728140138555</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="moveToMachineCoordinates()">
+      <option name="closed" value="true" />
+      <created>1728173828092</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1728173828092</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Figure out how to extract machine coordinates from status report" />
     <MESSAGE value="Ten runs of lower left homing." />
     <MESSAGE value="Prepare to set lower left origin" />
-    <option name="LAST_COMMIT_MESSAGE" value="Prepare to set lower left origin" />
+    <MESSAGE value="moveToMachineCoordinates()" />
+    <option name="LAST_COMMIT_MESSAGE" value="moveToMachineCoordinates()" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
