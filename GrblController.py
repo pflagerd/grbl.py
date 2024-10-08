@@ -99,6 +99,40 @@ class GrblController(serial.Serial):
         # get current machine coordinates
         return self.getMachineCoordinates()
 
+    def moveFastToMachineCoordinates(self, x=None, y=None, z=None):
+        if x is None and y is None and z in None:
+            print("At least one of x, y and z must be set")
+            return self.getMachineCoordinates()
+
+        gcode = f"G90 G53 G0 "
+        if x is not None:
+            gcode += f" X{x}"
+        if y is not None:
+            gcode += f" Y{y}"
+        if z is not None:
+            gcode += f" Z{z}"
+
+        gcode += "\r\n"
+
+        print(gcode)
+        super().write(gcode.encode('utf-8'))
+        while True:
+            line = super().readline()
+            print(str(line))
+            if line in [b"ok\r\n", b""]:
+                break
+
+        if line == b'ok\r\n':
+            if x is not None:
+                self.machineCoordinates[0] = x
+            if y is not None:
+                self.machineCoordinates[1] = y
+            if z is not None:
+                self.machineCoordinates[2] = z
+
+        # get current machine coordinates
+        return self.getMachineCoordinates()
+
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
