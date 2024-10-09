@@ -1,10 +1,34 @@
 import serial
 import sys
 
-from types import SimpleNamespace
-
 
 class GrblController(serial.Serial):
+    class Vector3:
+        def __init__(self, *args, **kwargs):
+            if args and len(args) == 1 and isinstance(args[0], (list, tuple)):
+                # Initialize from a list or tuple
+                if len(args[0]) != 3:
+                    raise ValueError("Exactly 3 values are required")
+                self.x, self.y, self.z = tuple(float(n) for n in args[0])
+            elif 'x' in kwargs or 'y' in kwargs or 'z' in kwargs:
+                # Initialize from named arguments
+                if 'x' in kwargs:
+                    self.x = float(kwargs['x'])
+                if 'y' in kwargs:
+                    self.y = float(kwargs['y'])
+                if 'z' in kwargs:
+                    self.z = float(kwargs['z'])
+            else:
+                raise ValueError("Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'")
+
+            self._attributes = (self.x, self.y, self.z)  # Store for index-based access
+
+        def __getitem__(self, index):
+            return self._attributes[index]
+
+    class Point(Vector3):
+        pass
+
     class HomingPositions:
         topRightZUp = b'0'
         topLeftZUp = b'1'
@@ -37,11 +61,11 @@ class GrblController(serial.Serial):
             print("Unexpected response " + str(line))
             sys.exit(1)
 
-        self.getMachineCoordinates()
-
         # TODO: DPP: Set spindle motor to 0
 
         # TODO: DPP: Set origin to lower left corner
+
+        self.getMachineCoordinates()
 
     def __del__(self):
         if super():  # TODO: ChatGPT suggested super().close() and it crashed so I added the if.  I don't about this.
@@ -49,8 +73,8 @@ class GrblController(serial.Serial):
 
     def getMachineCoordinates(self):
         # get current machine coordinates
-        print("sending ?\\n")  # Status report query.
-        super().write(b'?\n')
+        print("sending ?\\r\\n")  # Status report query.
+        super().write(b'?\r\n')
         while True:
             line = super().readline()
             print(str(line))
@@ -58,12 +82,12 @@ class GrblController(serial.Serial):
             if b'MPos' in line:
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
-                self.machineCoordinates = statusLines[1][indexOfColon + 1:].split(',')
+                self.machineCoordinates = tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(','))
                 print('machineCoordinates == ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
 
-        return list(self.machineCoordinates)
+        return self.Vector3(self.machineCoordinates)
 
     def cutToMachineCoordinates(self, x=None, y=None, z=None, feedRate=400):
         if x is None and y is None and z is None:

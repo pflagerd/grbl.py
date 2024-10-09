@@ -7,8 +7,6 @@
     <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="cut_vertical_lines.py">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/GrblController.py" beforeDir="false" afterPath="$PROJECT_DIR$/GrblController.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/cut_vertical_lines.py" beforeDir="false" afterPath="$PROJECT_DIR$/cut_vertical_lines.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_homing_cycle_and_move_to_default_lower_left_origin.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -35,21 +33,21 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "Python.cut_vertical_lines.executor": "Debug",
-    "Python.cut_workpiece_perimeter_index_lines.executor": "Debug",
-    "Python.find_and_set_home.executor": "Run",
-    "Python.get_status.executor": "Run",
-    "Python.probe_machine_coordinates_of_all_limits.executor": "Run",
-    "Python.run_homing_cycle.executor": "Debug",
-    "Python.run_homing_cycle_and_move_to_default_lower_left_origin.executor": "Debug",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "git-widget-placeholder": "master",
-    "last_opened_file_path": "/home/oy753c/desktops/neon-candle/grbl.py",
-    "settings.editor.selected.configurable": "vcs.Git"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;Python.cut_vertical_lines.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.cut_workpiece_perimeter_index_lines.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.find_and_set_home.executor&quot;: &quot;Run&quot;,
+    &quot;Python.get_status.executor&quot;: &quot;Run&quot;,
+    &quot;Python.probe_machine_coordinates_of_all_limits.executor&quot;: &quot;Run&quot;,
+    &quot;Python.run_homing_cycle.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.run_homing_cycle_and_move_to_default_lower_left_origin.executor&quot;: &quot;Debug&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/oy753c/desktops/neon-candle/grbl.py&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;vcs.Git&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="$PROJECT_DIR$" />
