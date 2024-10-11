@@ -37,7 +37,8 @@ class GrblController(serial.Serial):
             return f'({self._attributes[0]}, {self._attributes[1]}, {self._attributes[2]})'
 
     class Point(Vector):
-        pass
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
 
     class HomingPositions:
         topRightZUp = b'0'
@@ -215,6 +216,7 @@ class GrblController(serial.Serial):
 
 
 if __name__ == "__main__":
+    # Vector Tests
     # tuple Tests
     try:
         thing = GrblController.Vector(())
@@ -375,6 +377,173 @@ if __name__ == "__main__":
 
     try:
         thing = GrblController.Vector(x=1, junk=3)
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    # Point tests
+    # GrblController.Point class is effectively an alias for Grbl.Vector
+    # All the tests below are derived from the Vector tests above, substituting the word Point for Vector
+    # tuple Tests
+    try:
+        thing = GrblController.Point(())
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    thing = GrblController.Point((1,))
+    print(thing)
+    assert str(thing) == '(1.0, None, None)'
+
+    thing = GrblController.Point((1, 2,))
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, None)'
+
+    thing = GrblController.Point((1, 2, 3,))
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, 3.0)'
+
+    try:
+        thing = GrblController.Point((1, 2, 3, 4))
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point((1, 2, 3, 4, 5))
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point((1, 2, 3, 4, 5, 6))
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point((1,), (2,))
+        print(thing)
+    except TypeError as typeError:
+        assert typeError.args[0] == "float() argument must be a string or a real number, not 'tuple'"
+
+    # list Tests
+    try:
+        thing = GrblController.Point([])
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    thing = GrblController.Point([1])
+    print(thing)
+    assert str(thing) == '(1.0, None, None)'
+
+    thing = GrblController.Point([1, 2])
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, None)'
+
+    thing = GrblController.Point([1, 2, 3])
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, 3.0)'
+
+    try:
+        thing = GrblController.Point([1, 2, 3, 4])
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point([1, 2, 3, 4, 5])
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point([1, 2, 3, 4, 5, 6])
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point([1], [2])
+        print(thing)
+    except TypeError as typeError:
+        assert typeError.args[0] == "float() argument must be a string or a real number, not 'list'"
+
+    # positional argument tests
+    try:
+        thing = GrblController.Point()
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    thing = GrblController.Point(1)
+    print(thing)
+    assert str(thing) == '(1.0, None, None)'
+
+    thing = GrblController.Point(1, 2)
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, None)'
+
+    thing = GrblController.Point(1, 2, 3)
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, 3.0)'
+
+    try:
+        thing = GrblController.Point(1, 2, 3, 4)
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point(1, 2, 3, 4, 5)
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    try:
+        thing = GrblController.Point(1, 2, 3, 4, 5, 6)
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    # keyword argument tests
+    try:
+        thing = GrblController.Point(junk=3)
+        print(thing)
+    except ValueError as valueError:
+        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+
+    thing = GrblController.Point(x=1)
+    print(thing)
+    assert str(thing) == '(1.0, None, None)'
+
+    thing = GrblController.Point(y=2)
+    print(thing)
+    assert str(thing) == '(None, 2.0, None)'
+
+    thing = GrblController.Point(z=3)
+    print(thing)
+    assert str(thing) == '(None, None, 3.0)'
+
+    thing = GrblController.Point(x=1, y=2)
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, None)'
+
+    thing = GrblController.Point(x=1, z=3)
+    print(thing)
+    assert str(thing) == '(1.0, None, 3.0)'
+
+    thing = GrblController.Point(y=2, z=3)
+    print(thing)
+    assert str(thing) == '(None, 2.0, 3.0)'
+
+    thing = GrblController.Point(x=1, y=2, z=3)
+    print(thing)
+    assert str(thing) == '(1.0, 2.0, 3.0)'
+
+    try:
+        thing = GrblController.Point(x=1, junk=3)
         print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"

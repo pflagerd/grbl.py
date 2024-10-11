@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="cut_vertical_lines.py">
+    <list default="true" id="61d036d0-e3fc-4560-998a-7a8314f0c9b0" name="Changes" comment="Put in argument tests for GrblController.Vector">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/GrblController.py" beforeDir="false" afterPath="$PROJECT_DIR$/GrblController.py" afterDir="false" />
     </list>
@@ -287,7 +287,15 @@
       <option name="project" value="LOCAL" />
       <updated>1728439765444</updated>
     </task>
-    <option name="localTasksCounter" value="13" />
+    <task id="LOCAL-00013" summary="Put in argument tests for GrblController.Vector">
+      <option name="closed" value="true" />
+      <created>1728686291042</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1728686291042</updated>
+    </task>
+    <option name="localTasksCounter" value="14" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -299,7 +307,8 @@
     <MESSAGE value="Slow the default feed rate." />
     <MESSAGE value="Print the final machine coordinates" />
     <MESSAGE value="cut_vertical_lines.py" />
-    <option name="LAST_COMMIT_MESSAGE" value="cut_vertical_lines.py" />
+    <MESSAGE value="Put in argument tests for GrblController.Vector" />
+    <option name="LAST_COMMIT_MESSAGE" value="Put in argument tests for GrblController.Vector" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
@@ -321,7 +330,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/GrblController.py</url>
-          <line>258</line>
+          <line>260</line>
           <option name="timeStamp" value="25" />
         </line-breakpoint>
       </breakpoints>
