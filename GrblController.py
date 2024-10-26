@@ -57,17 +57,17 @@ class GrblController(serial.Serial):
         super().__init__(self.portDeviceName, self.portBaudRate, timeout=30)
 
         line = super().readline()
-        print(str(line))
+        print("received " + str(line))
         if line != b"\r\n":
             print("Unexpected response " + str(line))
             sys.exit(1)
         line = super().readline()
-        print(str(line))
+        print("received " + str(line))
         if line != b"Grbl 1.1h ['$' for help]\r\n":
             print("Unexpected response " + str(line))
             sys.exit(1)
         line = super().readline()
-        print(str(line))
+        print("received " + str(line))
         if line != b"[MSG:'$H'|'$X' to unlock]\r\n":
             print("Unexpected response " + str(line))
             sys.exit(1)
@@ -93,13 +93,13 @@ class GrblController(serial.Serial):
         super().write(b'?\n')
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
-            if b'MPos' in line:
+            if b'Idle' in line and b'MPos' in line:
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
                 self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
-                print('machineCoordinates == ', self.machineCoordinates)
+                print('machineCoordinates was read from status as ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
 
@@ -114,16 +114,16 @@ class GrblController(serial.Serial):
             feedRate = float(feedRate)
 
         spindleSpeed = 1000
-        if kwargs['feedRate']:
-            feedRate = float(feedRate)
+        if kwargs['spindleSpeed']:
+            spindleSpeed = float(spindleSpeed)
 
         # Set speed of spindle motor, and run it
         gcode = f"S{spindleSpeed} M3\n"
-        print(gcode)
+        print("sending " + gcode.replace('\n', '\\n'))
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -135,13 +135,18 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
+        # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
+        # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
+        #
+        gcode += " G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
+
         gcode += "\n"
 
-        print(gcode)
+        print("sending " + gcode.replace('\n', '\\n'))
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -155,7 +160,7 @@ class GrblController(serial.Serial):
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -170,13 +175,18 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
-        print("sending " + gcode + '\\n')
+        # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
+        # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
+        #
+        gcode += " G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
+
         gcode += "\n"
+        print("sending " + gcode.replace("\n", "\\n"))
 
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -191,7 +201,7 @@ class GrblController(serial.Serial):
         super().write(home_direction_invert + b'\n')
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line == b"ok\r\n":
                 break
 
@@ -199,10 +209,11 @@ class GrblController(serial.Serial):
         super().write(b'$H\n')
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line == b"ok\r\n":
                 break
 
+        # Unlike other commands $H doesn't seem to need a G4 P0.01 to force sync.
         return self.getMachineCoordinates()
 
     def startSpindleMotor(self, speed=1000):
