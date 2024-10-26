@@ -154,7 +154,7 @@ class GrblController(serial.Serial):
         # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
         # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
         #
-        gcode += "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
+        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
         gcode += "\n"
 
         gcode = gcode.encode('utf-8')
@@ -204,7 +204,7 @@ class GrblController(serial.Serial):
         # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
         # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
         #
-        gcode += "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
+        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
         gcode += "\n"
 
         gcode = gcode.encode('utf-8')
