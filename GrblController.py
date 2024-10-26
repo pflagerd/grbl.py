@@ -102,18 +102,35 @@ class GrblController(serial.Serial):
 
         return self.machineCoordinates
 
-    def cutToMachineCoordinates(self, x=None, y=None, z=None, feedRate=400):
-        if x is None and y is None and z is None:
-            print("At least one of x, y and z must be set")
-            return self.getMachineCoordinates()
+    def cutToMachineCoordinates(self, *args, **kwargs):
+        # parse args and fail if correct ones not there
+        newPosition = GrblController.Vector(*args, **kwargs)
+
+        feedRate = 400
+        if kwargs['feedRate']:
+            feedRate = float(feedRate)
+
+        spindleSpeed = 1000
+        if kwargs['feedRate']:
+            feedRate = float(feedRate)
+
+        # Set speed of spindle motor, and run it
+        gcode = f"S{spindleSpeed} M3\r\n"
+        print(gcode)
+        super().write(gcode.encode('utf-8'))
+        while True:
+            line = super().readline()
+            print(str(line))
+            if line in [b"ok\r\n", b""]:
+                break
 
         gcode = f"G90 G53 G1 F{feedRate}"
-        if x is not None:
-            gcode += f" X{x}"
-        if y is not None:
-            gcode += f" Y{y}"
-        if z is not None:
-            gcode += f" Z{z}"
+        if newPosition.x is not None:
+            gcode += f" X{newPosition.x}"
+        if newPosition.y is not None:
+            gcode += f" Y{newPosition.y}"
+        if newPosition.z is not None:
+            gcode += f" Z{newPosition.z}"
 
         gcode += "\r\n"
 
@@ -124,30 +141,31 @@ class GrblController(serial.Serial):
             print(str(line))
             if line in [b"ok\r\n", b""]:
                 break
-
-        if line == b'ok\r\n':
-            if x is not None:
-                self.machineCoordinates[0] = x
-            if y is not None:
-                self.machineCoordinates[1] = y
-            if z is not None:
-                self.machineCoordinates[2] = z
 
         # get current machine coordinates
         return self.getMachineCoordinates()
 
-    def moveToMachineCoordinates(self, x=None, y=None, z=None):
-        if x is None and y is None and z is None:
-            print("At least one of x, y and z must be set")
-            return self.getMachineCoordinates()
+    def moveToMachineCoordinates(self, *args, **kwargs):
+        # if spindle motor is running, stop it, regardless of what args are passed
+        gcode = f"M5\r\n"
+        print(gcode)
+        super().write(gcode.encode('utf-8'))
+        while True:
+            line = super().readline()
+            print(str(line))
+            if line in [b"ok\r\n", b""]:
+                break
 
+        # parse args and fail if correct ones not there
+        # move to new position
+        newPosition = GrblController.Vector(*args, **kwargs)
         gcode = f"G90 G53 G0 "
-        if x is not None:
-            gcode += f" X{x}"
-        if y is not None:
-            gcode += f" Y{y}"
-        if z is not None:
-            gcode += f" Z{z}"
+        if newPosition.x is not None:
+            gcode += f" X{newPosition.x}"
+        if newPosition.y is not None:
+            gcode += f" Y{newPosition.y}"
+        if newPosition.z is not None:
+            gcode += f" Z{newPosition.z}"
 
         gcode += "\r\n"
 
@@ -158,14 +176,6 @@ class GrblController(serial.Serial):
             print(str(line))
             if line in [b"ok\r\n", b""]:
                 break
-
-        if line == b'ok\r\n':
-            if x is not None:
-                self.machineCoordinates[0] = x
-            if y is not None:
-                self.machineCoordinates[1] = y
-            if z is not None:
-                self.machineCoordinates[2] = z
 
         # get current machine coordinates
         return self.getMachineCoordinates()
