@@ -136,7 +136,7 @@ class GrblController(serial.Serial):
         # get current machine coordinates
         return self.getMachineCoordinates()
 
-    def moveFastToMachineCoordinates(self, x=None, y=None, z=None):
+    def moveToMachineCoordinates(self, x=None, y=None, z=None):
         if x is None and y is None and z is None:
             print("At least one of x, y and z must be set")
             return self.getMachineCoordinates()
