@@ -72,9 +72,11 @@ class GrblController(serial.Serial):
             print("Unexpected response " + str(line))
             sys.exit(1)
 
-        # TODO: DPP: Set spindle motor to 0
+        # TODO: DPP: Set spindle motor to 1000
 
         # TODO: DPP: Set origin to lower left corner
+
+        # TODO: DPP: Turn off spindle motor
 
         self.getMachineCoordinates()
 
@@ -93,12 +95,12 @@ class GrblController(serial.Serial):
             if b'MPos' in line:
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
-                self.machineCoordinates = tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(','))
+                self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
                 print('machineCoordinates == ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
 
-        return self.Vector3(self.machineCoordinates)
+        return self.machineCoordinates
 
     def cutToMachineCoordinates(self, x=None, y=None, z=None, feedRate=400):
         if x is None and y is None and z is None:
@@ -187,6 +189,8 @@ class GrblController(serial.Serial):
             print(str(line))
             if line == b"ok\r\n":
                 break
+
+        return self.getMachineCoordinates()
 
     def startSpindleMotor(self, speed=1000):
         self.spindleMotorSpeed = speed
