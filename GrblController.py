@@ -89,8 +89,11 @@ class GrblController(serial.Serial):
 
     def getMachineCoordinates(self):
         # get current machine coordinates
-        print("sending ?\\n")  # Status report query.
-        super().write(b'?\n')
+        gcode = "?\n"
+
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))  # Status report query.
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
@@ -99,7 +102,7 @@ class GrblController(serial.Serial):
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
                 self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
-                print('machineCoordinates was read from status as ', self.machineCoordinates)
+                print('machineCoordinates were read from status as ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
 
@@ -119,8 +122,10 @@ class GrblController(serial.Serial):
 
         # Set speed of spindle motor, and run it
         gcode = f"S{spindleSpeed} M3\n"
-        print("sending " + gcode.replace('\n', '\\n'))
-        super().write(gcode.encode('utf-8'))
+
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
@@ -135,15 +140,26 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
+        gcode += '\n'
+
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))
+        super().write(gcode)
+        while True:
+            line = super().readline()
+            print("received " + str(line))
+            if line in [b"ok\r\n", b""]:
+                break
+
         # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
         # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
         #
-        gcode += " G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
-
+        gcode += "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
         gcode += "\n"
 
-        print("sending " + gcode.replace('\n', '\\n'))
-        super().write(gcode.encode('utf-8'))
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
@@ -174,16 +190,26 @@ class GrblController(serial.Serial):
             gcode += f" Y{newPosition.y}"
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
+        gcode += '\n'
+
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))
+        super().write(gcode)
+        while True:
+            line = super().readline()
+            print("received " + str(line))
+            if line in [b"ok\r\n", b""]:
+                break
 
         # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
         # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
         #
-        gcode += " G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
-
+        gcode += "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
         gcode += "\n"
-        print("sending " + gcode.replace("\n", "\\n"))
 
-        super().write(gcode.encode('utf-8'))
+        gcode = gcode.encode('utf-8')
+        print("sending " + str(gcode))
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
@@ -196,17 +222,18 @@ class GrblController(serial.Serial):
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
-        home_direction_invert = b'$23=' + homingPosition
-        print("sending " + str(home_direction_invert) + "\\n")
-        super().write(home_direction_invert + b'\n')
+        gcode = b'$23=' + homingPosition + b'\n'
+        print("sending " + str(gcode))
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
             if line == b"ok\r\n":
                 break
 
-        print("sending $H\\n")  # Homing Cycle.
-        super().write(b'$H\n')
+        gcode = b'$H\n'
+        print("sending " + str(gcode))  # Homing Cycle.
+        super().write(gcode)
         while True:
             line = super().readline()
             print("received " + str(line))
@@ -218,12 +245,13 @@ class GrblController(serial.Serial):
 
     def startSpindleMotor(self, speed=1000):
         self.spindleMotorSpeed = speed
-        grbl = f'S{speed} M3\r\n'
-        print(grbl)
-        super().write(grbl.encode('utf-8'))
+        gcode = f'S{speed} \r\n'
+        gcode = gcode.encode('utf-8')
+        print("sending " + gcode)
+        super().write(gcode)
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b'']:
                 break
 
@@ -231,12 +259,13 @@ class GrblController(serial.Serial):
 
     def stopSpindleMotor(self, speed=0):
         self.spindleMotorSpeed = speed
-        grbl = f'S{speed} M5\r\n'
-        print(grbl)
-        super().write(grbl.encode('utf-8'))
+        gcode = f'S{speed} M5\n'
+        gcode = gcode.encode('utf-8')
+        print("sending " + gcode)
+        super().write(gcode)
         while True:
             line = super().readline()
-            print(str(line))
+            print("received " + str(line))
             if line in [b"ok\r\n", b'']:
                 break
 
