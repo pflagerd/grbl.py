@@ -1,28 +1,27 @@
 from GrblController import *
 
-lower_left_origin_machine_coordinates = (-405.000, -299.000, -84.500)
+lower_left_origin_machine_coordinates = (-405.000, -299.000, -85.125)
 
 if __name__ == "__main__":
     grblController = GrblController()
-    grblController.runHomingCycle()
-    print(grblController.moveFastToMachineCoordinates(*lower_left_origin_machine_coordinates))
+    print('machine coordinates at home == ' + str(grblController.runHomingCycle()))
 
-    grblController.moveFastToMachineCoordinates(z=str(float(lower_left_origin_machine_coordinates[2]) + 5))
-    grblController.moveFastToMachineCoordinates(x=str(float(lower_left_origin_machine_coordinates[0]) + 5),
-                                                y=str(float(lower_left_origin_machine_coordinates[1]) + 50))
+    depth = 0  # 1 / 10
+    left = 240
+    top = 55
+    length = 50
 
-    grblController.startSpindleMotor()
     for i in range(20):
-        grblController.cutToMachineCoordinates(z=str(float(lower_left_origin_machine_coordinates[2]) - 1 / 10), feedRate=100)
+        grblController.moveToMachineCoordinates(z=lower_left_origin_machine_coordinates[2] + 5)
+        grblController.moveToMachineCoordinates(x=lower_left_origin_machine_coordinates[0] + left + i,
+                                                y=lower_left_origin_machine_coordinates[1] + top)
 
-        grblController.cutToMachineCoordinates(x=str(float(lower_left_origin_machine_coordinates[0]) + 5 + i),
-                                               y=str(float(lower_left_origin_machine_coordinates[1]) + 5),
-                                               feedRate=400)
+        grblController.cutToMachineCoordinates(z=lower_left_origin_machine_coordinates[2] - depth, feedRate=100)
 
-        grblController.moveFastToMachineCoordinates(z=str(float(lower_left_origin_machine_coordinates[2]) + 5))
-        grblController.moveFastToMachineCoordinates(x=str(float(lower_left_origin_machine_coordinates[0]) + 5 + i),
-                                                    y=str(float(lower_left_origin_machine_coordinates[1]) + 50))
+        grblController.cutToMachineCoordinates(x=lower_left_origin_machine_coordinates[0] + left + i,
+                                               y=lower_left_origin_machine_coordinates[1] + top - length)
 
-    grblController.stopSpindleMotor()
+    grblController.moveToMachineCoordinates(lower_left_origin_machine_coordinates[0], lower_left_origin_machine_coordinates[1] + 200, -5)
+
 
 

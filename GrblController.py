@@ -113,12 +113,12 @@ class GrblController(serial.Serial):
         newPosition = GrblController.Vector(*args, **kwargs)
 
         feedRate = 400
-        if kwargs['feedRate']:
-            feedRate = float(feedRate)
+        if 'feedRate' in kwargs:
+            feedRate = float(kwargs['feedRate'])
 
         spindleSpeed = 1000
-        if kwargs['spindleSpeed']:
-            spindleSpeed = float(spindleSpeed)
+        if 'spindleSpeed' in kwargs:
+            spindleSpeed = float(kwargs['spindleSpeed'])
 
         # Set speed of spindle motor, and run it
         gcode = f"S{spindleSpeed} M3\n"
@@ -247,7 +247,7 @@ class GrblController(serial.Serial):
         self.spindleMotorSpeed = speed
         gcode = f'S{speed} \r\n'
         gcode = gcode.encode('utf-8')
-        print("sending " + gcode)
+        print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
@@ -261,7 +261,7 @@ class GrblController(serial.Serial):
         self.spindleMotorSpeed = speed
         gcode = f'S{speed} M5\n'
         gcode = gcode.encode('utf-8')
-        print("sending " + gcode)
+        print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
