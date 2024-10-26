@@ -78,7 +78,10 @@ class GrblController(serial.Serial):
 
         # TODO: DPP: Turn off spindle motor
 
-        self.getMachineCoordinates()
+        # No point querying machineCoordinates with ? as they will always be inaccurate
+        # since the message returned will be something like
+        # b'<Alarm|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0|WCO:-405.000,-299.000,-84.000>\r\n'
+        # where the "Alarm" status indicates the rest of the data is uncertain.
 
     def __del__(self):
         if super():  # TODO: ChatGPT suggested super().close() and it crashed so I added the if.  I don't about this.
@@ -86,8 +89,8 @@ class GrblController(serial.Serial):
 
     def getMachineCoordinates(self):
         # get current machine coordinates
-        print("sending ?\\r\\n")  # Status report query.
-        super().write(b'?\r\n')
+        print("sending ?\\n")  # Status report query.
+        super().write(b'?\n')
         while True:
             line = super().readline()
             print(str(line))
@@ -115,7 +118,7 @@ class GrblController(serial.Serial):
             feedRate = float(feedRate)
 
         # Set speed of spindle motor, and run it
-        gcode = f"S{spindleSpeed} M3\r\n"
+        gcode = f"S{spindleSpeed} M3\n"
         print(gcode)
         super().write(gcode.encode('utf-8'))
         while True:
@@ -132,7 +135,7 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
-        gcode += "\r\n"
+        gcode += "\n"
 
         print(gcode)
         super().write(gcode.encode('utf-8'))
@@ -147,8 +150,8 @@ class GrblController(serial.Serial):
 
     def moveToMachineCoordinates(self, *args, **kwargs):
         # if spindle motor is running, stop it, regardless of what args are passed
-        gcode = f"M5\r\n"
-        print(gcode)
+        gcode = f"M5\n"
+        print("sending " + gcode.replace("\n", "\\n"))
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
@@ -159,7 +162,7 @@ class GrblController(serial.Serial):
         # parse args and fail if correct ones not there
         # move to new position
         newPosition = GrblController.Vector(*args, **kwargs)
-        gcode = f"G90 G53 G0 "
+        gcode = f"G90 G53 G0"
         if newPosition.x is not None:
             gcode += f" X{newPosition.x}"
         if newPosition.y is not None:
@@ -167,9 +170,9 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
-        gcode += "\r\n"
+        print("sending " + gcode + '\\n')
+        gcode += "\n"
 
-        print(gcode)
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
