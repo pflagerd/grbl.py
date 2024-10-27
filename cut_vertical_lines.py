@@ -1,13 +1,13 @@
 from GrblController import *
 
-lower_left_origin_machine_coordinates = (-405.000, -299.000, -85.125)
+lower_left_origin_machine_coordinates = (-405.000, -299.000, -85.105)
 
 if __name__ == "__main__":
     grblController = GrblController()
     print('machine coordinates at home == ' + str(grblController.runHomingCycle()))
 
     depth = 0  # 1 / 10
-    left = 240
+    left = 360
     top = 55
     length = 50
 
