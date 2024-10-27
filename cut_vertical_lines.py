@@ -1,6 +1,6 @@
 from GrblController import *
 
-lower_left_origin_machine_coordinates = (-405.000, -299.000, -85.105)
+lower_left_origin_machine_coordinates = (-405.000, -299.000, -84.800)
 
 if __name__ == "__main__":
     grblController = GrblController()
@@ -8,8 +8,8 @@ if __name__ == "__main__":
 
     count = 5
     between = 4
-    depth = 5
-    left = 5 + 210
+    depth = 0
+    left = 5 + 270
     top = 150
     length = 90
     feedRate = 1000
@@ -20,11 +20,11 @@ if __name__ == "__main__":
                                                 y=lower_left_origin_machine_coordinates[1] + top)
 
         grblController.cutToMachineCoordinates(z=lower_left_origin_machine_coordinates[2] - depth,
-                                               feedRate=feedRate)
+                                               feedRate=500)
 
         grblController.cutToMachineCoordinates(x=lower_left_origin_machine_coordinates[0] + left + i * between,
                                                y=lower_left_origin_machine_coordinates[1] + top - length,
-                                               feedRate=500)
+                                               feedRate=feedRate)
 
     grblController.moveToMachineCoordinates(z=lower_left_origin_machine_coordinates[2] + 5)
     grblController.moveToMachineCoordinates(lower_left_origin_machine_coordinates[0],
