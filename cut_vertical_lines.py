@@ -13,8 +13,9 @@ if __name__ == "__main__":
     grblController = GrblController()
     print('machine coordinates at home == ' + str(grblController.runHomingCycle()))
 
+    heightBetweenBlocks = 40
     blockWidth = 20
-    currentBlockY = 0
+    currentBlockY = 0 * heightBetweenBlocks
     currentLineY = 0
     depth = 5
     feedRate = 1000
@@ -34,7 +35,6 @@ if __name__ == "__main__":
                 for currentLineZ in inclusiveFloatRange(0, depth, currentZIncrement):
                     grblController.moveToMachineCoordinates(x=workPieceLowerLeftOriginMachineCoordinates[0] + workPieceMinimumX + currentBlockX + currentLineX,
                                                             y=workPieceLowerLeftOriginMachineCoordinates[1] + workPieceMinimumY + currentBlockY + currentLineY + lineHeight)
-
                     grblController.cutToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] - currentLineZ,
                                                            feedRate=feedRate / 2)
 
