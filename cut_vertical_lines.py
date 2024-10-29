@@ -3,12 +3,6 @@ from GrblController import *
 workPieceLowerLeftOriginMachineCoordinates = (-405.000, -297.000, -68.7)
 
 
-def inclusiveFloatRange(start, stop, step):
-    while start < stop + step:
-        yield start  # rounding to avoid floating-point precision issues
-        start += step
-
-
 if __name__ == "__main__":
     grblController = GrblController()
     print('machine coordinates at home == ' + str(grblController.runHomingCycle()))
@@ -21,27 +15,50 @@ if __name__ == "__main__":
     lineHeight = 30
     safeZAboveZOrigin = 5
     widthBetweenLines = 5
-    widthBetweenBlocks = 30
+    widthBetweenBlocks = 40
     workPieceMaximumX = 390
     workPieceMaximumY = 290
     workPieceMinimumX = 10
     workPieceMinimumY = 10
 
     grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] + safeZAboveZOrigin)
-    for currentZIncrement in inclusiveFloatRange(1 / 2, 3, 1 / 2):  # depth increments
-        for currentBlockX in inclusiveFloatRange(0, widthBetweenBlocks, workPieceMaximumX - blockWidth - workPieceMinimumX):
-            for currentLineX in inclusiveFloatRange(0, blockWidth, widthBetweenLines):
-                for currentLineZ in inclusiveFloatRange(0, depth, currentZIncrement):
-                    grblController.moveToMachineCoordinates(x=workPieceLowerLeftOriginMachineCoordinates[0] + workPieceMinimumX + currentBlockX + currentLineX,
-                                                            y=workPieceLowerLeftOriginMachineCoordinates[1] + workPieceMinimumY + currentBlockY + currentLineY + lineHeight)
 
-                    grblController.cutToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] - currentLineZ,
-                                                           feedRate=feedRate / 2)
+    currentBlockX = 0
+    while True:  # move block by block using currentBlockX
+        currentZIncrement = 1 / 2  # this changes for each block.
+        currentLineX = 0
+        while True:  # move line by line using currentLineX
+            currentLineZ = 0
+            lastCurrentZIncrement = currentZIncrement
+            while True:  # move currentZIncrement by currentZIncrement
+                print(f'currentLineZ == {currentLineZ}, lastCurrentZIncrement was {lastCurrentZIncrement}')
+                grblController.moveToMachineCoordinates(x=workPieceLowerLeftOriginMachineCoordinates[0] + workPieceMinimumX + currentBlockX + currentLineX,
+                                                        y=workPieceLowerLeftOriginMachineCoordinates[1] + workPieceMinimumY + currentBlockY + currentLineY + lineHeight)
 
-                    grblController.cutToMachineCoordinates(x=workPieceLowerLeftOriginMachineCoordinates[0] + workPieceMinimumX + currentBlockX + currentLineX,
-                                                           y=workPieceLowerLeftOriginMachineCoordinates[1] + workPieceMinimumY + currentBlockY + currentLineY,
-                                                           feedRate=feedRate)
-                    grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] + safeZAboveZOrigin)
+                grblController.cutToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] - currentLineZ,
+                                                       feedRate=feedRate / 2)
+
+                grblController.cutToMachineCoordinates(x=workPieceLowerLeftOriginMachineCoordinates[0] + workPieceMinimumX + currentBlockX + currentLineX,
+                                                       y=workPieceLowerLeftOriginMachineCoordinates[1] + workPieceMinimumY + currentBlockY + currentLineY,
+                                                       feedRate=feedRate)
+                grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] + safeZAboveZOrigin)
+                if currentLineZ == depth:
+                    break
+                if currentLineZ + lastCurrentZIncrement < depth:
+                    currentLineZ += lastCurrentZIncrement
+                    continue
+                lastCurrentZIncrement = depth - currentLineZ
+                currentLineZ = depth
+                continue
+            if currentLineX <= blockWidth:
+                currentLineX += widthBetweenLines
+                continue
+            break
+        currentZIncrement += 1 / 2
+        if currentBlockX <= (workPieceMaximumX - workPieceMinimumX) - widthBetweenBlocks:  # I have to think this through.  I always struggle with inclusive/exclusive. (workPieceMaximumX - workPieceMinimumX) is the effective available workpiece width
+            currentBlockX += widthBetweenBlocks
+            continue
+        break
 
     grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates[0],
                                             workPieceLowerLeftOriginMachineCoordinates[1] + 280,
