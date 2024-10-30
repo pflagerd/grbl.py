@@ -9,7 +9,7 @@ if __name__ == "__main__":
 
     blockHeight = 40  # lineHeight + 10
     blockWidth = 20
-    currentBlockY = 2 * blockHeight
+    currentBlockY = 4 * blockHeight
     currentLineY = 0
     depth = 4.5
     feedRate = 1000
