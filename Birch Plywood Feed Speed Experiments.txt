@@ -1,0 +1,5 @@
+1000 1st pass <= 2.0
+1000 2nd pass 0.5 <= 2.5
+
+
+400 0.5 2nd pass < 3.5  2.5, 3 and 3.5 oscillate

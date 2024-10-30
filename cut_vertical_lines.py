@@ -9,10 +9,10 @@ if __name__ == "__main__":
 
     blockHeight = 45  # lineHeight + 15
     blockWidth = 20
-    currentBlockY = 4 * blockHeight
+    currentBlockY = 5 * blockHeight
     currentLineY = 0
     depth = 4.5
-    feedRate = 1000
+    feedRate = 400
     lineHeight = 30
     safeZAboveZOrigin = 5
     widthBetweenLines = 10
