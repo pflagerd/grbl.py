@@ -7,7 +7,7 @@ if __name__ == "__main__":
     grblController = GrblController()
     print('machine coordinates at home == ' + str(grblController.runHomingCycle()))
 
-    blockHeight = 40  # lineHeight + 10
+    blockHeight = 45  # lineHeight + 15
     blockWidth = 20
     currentBlockY = 4 * blockHeight
     currentLineY = 0
