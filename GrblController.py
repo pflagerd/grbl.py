@@ -1,6 +1,7 @@
 import serial
 import sys
 
+debug = False
 
 class GrblController(serial.Serial):
     class Vector:
@@ -57,19 +58,25 @@ class GrblController(serial.Serial):
         super().__init__(self.portDeviceName, self.portBaudRate, timeout=30)
 
         line = super().readline()
-        print("received " + str(line))
+        if debug:
+            print("received " + str(line))
         if line != b"\r\n":
-            print("Unexpected response " + str(line))
+            if debug:
+                print("Unexpected response " + str(line))
             sys.exit(1)
         line = super().readline()
-        print("received " + str(line))
+        if debug:
+            print("received " + str(line))
         if line != b"Grbl 1.1h ['$' for help]\r\n":
-            print("Unexpected response " + str(line))
+            if debug:
+                print("Unexpected response " + str(line))
             sys.exit(1)
         line = super().readline()
-        print("received " + str(line))
+        if debug:
+            print("received " + str(line))
         if line != b"[MSG:'$H'|'$X' to unlock]\r\n":
-            print("Unexpected response " + str(line))
+            if debug:
+                print("Unexpected response " + str(line))
             sys.exit(1)
 
         # TODO: DPP: Set spindle motor to 1000
@@ -92,17 +99,20 @@ class GrblController(serial.Serial):
         gcode = "?\n"
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))  # Status report query.
+        if debug:
+            print("sending " + str(gcode))  # Status report query.
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
             if b'Idle' in line and b'MPos' in line:
                 statusLines = line.decode('utf-8').split('|')
                 indexOfColon = statusLines[1].index(':')
                 self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
-                print('machineCoordinates were read from status as ', self.machineCoordinates)
+                if debug:
+                    print('machineCoordinates were read from status as ', self.machineCoordinates)
             if line == b"ok\r\n":
                 break
 
@@ -124,11 +134,13 @@ class GrblController(serial.Serial):
         gcode = f"S{spindleSpeed} M3\n"
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -143,11 +155,13 @@ class GrblController(serial.Serial):
         gcode += '\n'
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -158,11 +172,13 @@ class GrblController(serial.Serial):
         gcode += "\n"
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -172,11 +188,13 @@ class GrblController(serial.Serial):
     def moveToMachineCoordinates(self, *args, **kwargs):
         # if spindle motor is running, stop it, regardless of what args are passed
         gcode = f"M5\n"
-        print("sending " + gcode.replace("\n", "\\n"))
+        if debug:
+            print("sending " + gcode.replace("\n", "\\n"))
         super().write(gcode.encode('utf-8'))
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -193,11 +211,13 @@ class GrblController(serial.Serial):
         gcode += '\n'
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -208,11 +228,13 @@ class GrblController(serial.Serial):
         gcode += "\n"
 
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
 
@@ -223,20 +245,24 @@ class GrblController(serial.Serial):
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
         gcode = b'$23=' + homingPosition + b'\n'
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line == b"ok\r\n":
                 break
 
         gcode = b'$H\n'
-        print("sending " + str(gcode))  # Homing Cycle.
+        if debug:
+            print("sending " + str(gcode))  # Homing Cycle.
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line == b"ok\r\n":
                 break
 
@@ -247,11 +273,13 @@ class GrblController(serial.Serial):
         self.spindleMotorSpeed = speed
         gcode = f'S{speed} \r\n'
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b'']:
                 break
 
@@ -261,14 +289,15 @@ class GrblController(serial.Serial):
         self.spindleMotorSpeed = speed
         gcode = f'S{speed} M5\n'
         gcode = gcode.encode('utf-8')
-        print("sending " + str(gcode))
+        if debug:
+            print("sending " + str(gcode))
         super().write(gcode)
         while True:
             line = super().readline()
-            print("received " + str(line))
+            if debug:
+                print("received " + str(line))
             if line in [b"ok\r\n", b'']:
                 break
-
         return speed
 
 
@@ -277,164 +306,196 @@ if __name__ == "__main__":
     # tuple Tests
     try:
         thing = GrblController.Vector(())
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Vector((1,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Vector((1, 2,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Vector((1, 2, 3,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Vector((1, 2, 3, 4))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector((1, 2, 3, 4, 5))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector((1, 2, 3, 4, 5, 6))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector((1,), (2,))
-        print(thing)
+        if debug:
+            print(thing)
     except TypeError as typeError:
         assert typeError.args[0] == "float() argument must be a string or a real number, not 'tuple'"
 
     # list Tests
     try:
         thing = GrblController.Vector([])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Vector([1])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Vector([1, 2])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Vector([1, 2, 3])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Vector([1, 2, 3, 4])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector([1, 2, 3, 4, 5])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector([1, 2, 3, 4, 5, 6])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector([1], [2])
-        print(thing)
+        if debug:
+            print(thing)
     except TypeError as typeError:
         assert typeError.args[0] == "float() argument must be a string or a real number, not 'list'"
 
     # positional argument tests
     try:
         thing = GrblController.Vector()
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Vector(1)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Vector(1, 2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Vector(1, 2, 3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Vector(1, 2, 3, 4)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector(1, 2, 3, 4, 5)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Vector(1, 2, 3, 4, 5, 6)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     # keyword argument tests
     try:
         thing = GrblController.Vector(junk=3)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Vector(x=1)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Vector(y=2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, 2.0, None)'
 
     thing = GrblController.Vector(z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, None, 3.0)'
 
     thing = GrblController.Vector(x=1, y=2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Vector(x=1, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, 3.0)'
 
     thing = GrblController.Vector(y=2, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, 2.0, 3.0)'
 
     thing = GrblController.Vector(x=1, y=2, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Vector(x=1, junk=3)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
@@ -444,163 +505,195 @@ if __name__ == "__main__":
     # tuple Tests
     try:
         thing = GrblController.Point(())
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Point((1,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Point((1, 2,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Point((1, 2, 3,))
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Point((1, 2, 3, 4))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point((1, 2, 3, 4, 5))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point((1, 2, 3, 4, 5, 6))
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point((1,), (2,))
-        print(thing)
+        if debug:
+            print(thing)
     except TypeError as typeError:
         assert typeError.args[0] == "float() argument must be a string or a real number, not 'tuple'"
 
     # list Tests
     try:
         thing = GrblController.Point([])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Point([1])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Point([1, 2])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Point([1, 2, 3])
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Point([1, 2, 3, 4])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point([1, 2, 3, 4, 5])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point([1, 2, 3, 4, 5, 6])
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point([1], [2])
-        print(thing)
+        if debug:
+            print(thing)
     except TypeError as typeError:
         assert typeError.args[0] == "float() argument must be a string or a real number, not 'list'"
 
     # positional argument tests
     try:
         thing = GrblController.Point()
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Point(1)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Point(1, 2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Point(1, 2, 3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Point(1, 2, 3, 4)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point(1, 2, 3, 4, 5)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     try:
         thing = GrblController.Point(1, 2, 3, 4, 5, 6)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     # keyword argument tests
     try:
         thing = GrblController.Point(junk=3)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
     thing = GrblController.Point(x=1)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, None)'
 
     thing = GrblController.Point(y=2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, 2.0, None)'
 
     thing = GrblController.Point(z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, None, 3.0)'
 
     thing = GrblController.Point(x=1, y=2)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, None)'
 
     thing = GrblController.Point(x=1, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, None, 3.0)'
 
     thing = GrblController.Point(y=2, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(None, 2.0, 3.0)'
 
     thing = GrblController.Point(x=1, y=2, z=3)
-    print(thing)
+    if debug:
+        print(thing)
     assert str(thing) == '(1.0, 2.0, 3.0)'
 
     try:
         thing = GrblController.Point(x=1, junk=3)
-        print(thing)
+        if debug:
+            print(thing)
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
