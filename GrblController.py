@@ -269,6 +269,40 @@ class GrblController(serial.Serial):
         # Unlike other commands $H doesn't seem to need a G4 P0.01 to force sync.
         return self.getMachineCoordinates()
 
+    def sendAndWait(self, gcode):
+        gcode += '\n'
+
+        gcode = gcode.encode('utf-8')
+        if debug:
+            print("sending " + str(gcode))
+        super().write(gcode)
+        while True:
+            line = super().readline()
+            if debug:
+                print("received " + str(line))
+            if line in [b"ok\r\n", b""]:
+                break
+
+        # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
+        # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
+        #
+        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
+        gcode += "\n"
+
+        gcode = gcode.encode('utf-8')
+        if debug:
+            print("sending " + str(gcode))
+        super().write(gcode)
+        while True:
+            line = super().readline()
+            if debug:
+                print("received " + str(line))
+            if line in [b"ok\r\n", b""]:
+                break
+
+        # get current machine coordinates
+        return self.getMachineCoordinates()
+
     def startSpindleMotor(self, speed=1000):
         self.spindleMotorSpeed = speed
         gcode = f'S{speed} \r\n'
@@ -299,6 +333,10 @@ class GrblController(serial.Serial):
             if line in [b"ok\r\n", b'']:
                 break
         return speed
+
+    def unlock(self):
+        self.sendAndWait("$X")
+        return self.getMachineCoordinates()
 
 
 if __name__ == "__main__":
