@@ -42,11 +42,11 @@ class GrblController(serial.Serial):
             super().__init__(*args, **kwargs)
 
     class HomingPositions:
-        topRightZUp = b'0'
-        topLeftZUp = b'1'
-        bottomRightZUp = b'2'
-        bottomLeftZUp = b'3'
-        topRightZDown = b'4'
+        topRightZUp = '0'
+        topLeftZUp = '1'
+        bottomRightZUp = '2'
+        bottomLeftZUp = '3'
+        topRightZDown = '4'
 
     def __init__(self, portDeviceName="/dev/ttyUSB0", portBaudRate=115200):
         self.spindleMotorSpeed = 0
@@ -80,10 +80,13 @@ class GrblController(serial.Serial):
             sys.exit(1)
 
         # TODO: DPP: Set spindle motor to 1000
+        self.sendAndWait("S1000")
 
-        # TODO: DPP: Set origin to lower left corner
+        # TODO: DPP: Set homing origin to lower left corner
+        self.sendAndWait('$23=' + GrblController.HomingPositions.bottomLeftZUp)
 
         # TODO: DPP: Turn off spindle motor
+        self.sendAndWait("M5")
 
         # No point querying machineCoordinates with ? as they will always be inaccurate
         # since the message returned will be something like
@@ -244,7 +247,8 @@ class GrblController(serial.Serial):
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
-        gcode = b'$23=' + homingPosition + b'\n'
+        gcode = '$23=' + homingPosition + '\n'
+        gcode = gcode.encode('utf-8')
         if debug:
             print("sending " + str(gcode))
         super().write(gcode)
