@@ -11,7 +11,7 @@ if __name__ == "__main__":
 
     #grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates[2] + safeZAboveZOrigin)
 
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/o 0-0 fr1000 climb.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover 0-0 f1000 cw.gcode")
 
     # grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates[0],
     #                                         workPieceLowerLeftOriginMachineCoordinates[1] + 280,
