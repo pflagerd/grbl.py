@@ -80,14 +80,17 @@ class GrblController(serial.Serial):
                 print("Unexpected response " + str(line))
             sys.exit(1)
 
-        # TODO: DPP: Set spindle motor to 1000
-        self.sendAndWait("S1000")
+        # Unlock
+        self.send("$X")
 
-        # TODO: DPP: Set homing origin to lower left corner
-        self.sendAndWait('$23=' + GrblController.HomingPositions.bottomLeftZUp)
+        # DPP: Set spindle motor to 1000
+        self.send("S1000")
 
-        # TODO: DPP: Turn off spindle motor
-        self.sendAndWait("M5")
+        # DPP: Set homing origin to lower left corner
+        self.send('$23=' + GrblController.HomingPositions.bottomLeftZUp)
+
+        # DPP: Turn off spindle motor
+        self.send("M5")
 
         # No point querying machineCoordinates with ? as they will always be inaccurate
         # since the message returned will be something like
@@ -203,6 +206,8 @@ class GrblController(serial.Serial):
                 print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
+            if b'error:' in line:
+                raise RuntimeError("Error during send(): " + str(line))
 
     def sendAndWait(self, gcode):
         self.send(gcode)
@@ -220,7 +225,8 @@ class GrblController(serial.Serial):
                 "rt") as gcodeFile:
             for gcodeLine in gcodeFile:
                 gcode = gcodeLine.rstrip()
-                self.sendAndWait(gcode)
+                print(gcode)
+                self.send(gcode)
 
     def setOrigin(self):
         self.send("G54")
