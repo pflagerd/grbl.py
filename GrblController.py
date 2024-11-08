@@ -220,6 +220,8 @@ class GrblController(serial.Serial):
         # Set default coordinate system (54)
         self.send("G54")
 
+        print(self.getMachineCoordinates())
+
         with open(
                 fileName,
                 "rt") as gcodeFile:
@@ -228,9 +230,17 @@ class GrblController(serial.Serial):
                 print(gcode)
                 self.send(gcode)
 
-    def setOrigin(self):
-        self.send("G54")
-        self.send("G10 P0 L20 X0 Y0 Z0")
+    def setOrigin(self, *args, **kwargs):
+        if not args:
+            self.send("G10 P1 L20 X0 Y0 Z0")  # Allegedly P1 means the G54 coordinate system.
+            return
+
+        if args and isinstance(args[0], GrblController.Vector):
+            newPosition = args[0]
+        else:
+            newPosition = GrblController.Vector(*args, **kwargs)
+
+        self.send(f'G10 P1 L2 X{newPosition.x} Y{newPosition.y} Z{newPosition.z}')
 
     def startSpindleMotor(self, speed=1000):
         self.spindleMotorSpeed = speed
