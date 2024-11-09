@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from GrblController import *
 
 workPieceLowerLeftOriginMachineCoordinates = GrblController.Vector(-405.000, -297.000, -76.0)
@@ -13,8 +15,13 @@ if __name__ == "__main__":
     # grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates.z + safeZAboveZOrigin)
     # print(grblController.getMachineCoordinates())
 
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.7 f400 ccw.gcode")
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.8 f400 cw.gcode")
+    # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.1 f400 ccw.gcode")
+    # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.2 f400 cw.gcode")
+    #grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.3 f400 ccw.gcode")
+    start = datetime.now()
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.4 f400 cw.gcode")
+    finish = datetime.now()
+    print (f'Elapsed time was {finish - start}')
 
     # grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates[0],
     #                                         workPieceLowerLeftOriginMachineCoordinates[1] + 280,
