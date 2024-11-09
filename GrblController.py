@@ -92,6 +92,11 @@ class GrblController(serial.Serial):
         # DPP: Turn off spindle motor
         self.send("M5")
 
+        # DPP: Set acceleration
+        self.send("$120=10")  # x 10mm/s
+        self.send("$121=10")  # y
+        self.send("$122=10")  # z
+
         # No point querying machineCoordinates with ? as they will always be inaccurate
         # since the message returned will be something like
         # b'<Alarm|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0|WCO:-405.000,-299.000,-84.000>\r\n'
@@ -225,10 +230,12 @@ class GrblController(serial.Serial):
         with open(
                 fileName,
                 "rt") as gcodeFile:
+            lineNumber = 1
             for gcodeLine in gcodeFile:
                 gcode = gcodeLine.rstrip()
-                print(gcode)
+                print(str(lineNumber) + " " + gcode)
                 self.send(gcode)
+                lineNumber += 1
 
     def setOrigin(self, *args, **kwargs):
         if not args:
