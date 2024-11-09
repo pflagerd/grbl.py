@@ -13,8 +13,8 @@ if __name__ == "__main__":
     # grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates.z + safeZAboveZOrigin)
     # print(grblController.getMachineCoordinates())
 
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.5 f200 cw.gcode")
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.5 f200 ccw.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.7 f400 ccw.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -4.8 f400 cw.gcode")
 
     # grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates[0],
     #                                         workPieceLowerLeftOriginMachineCoordinates[1] + 280,

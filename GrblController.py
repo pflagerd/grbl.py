@@ -233,7 +233,7 @@ class GrblController(serial.Serial):
             lineNumber = 1
             for gcodeLine in gcodeFile:
                 gcode = gcodeLine.rstrip()
-                print(str(lineNumber) + " " + gcode)
+                print(fileName + "(" + str(lineNumber) + ") " + gcode)
                 self.send(gcode)
                 lineNumber += 1
 
