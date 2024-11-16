@@ -118,6 +118,30 @@ class GrblController(serial.Serial):
 
         return self.machineCoordinates
 
+    def getStatusReport(self, debug=False):
+        # get status
+        gcode = "?\n"
+
+        gcode = gcode.encode('utf-8')
+        if debug:
+            print("sending " + str(gcode))  # Status report query.
+        super().write(gcode)
+        statusReport = None
+        while True:
+            line = super().readline()
+            if debug:
+                print("received " + str(line))
+            # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
+            if line.startswith(b'<'):
+                statusReport = line.decode()
+                if debug:
+                    print('raw status report received was:', statusReport)
+            if line == b"ok\r\n":  # will I receive this at all?
+                break
+
+        return statusReport
+
+
     def cutToMachineCoordinates(self, *args, **kwargs):
         # parse args and fail if correct ones not there
         newPosition = GrblController.Vector(*args, **kwargs)
