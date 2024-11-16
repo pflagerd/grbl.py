@@ -130,6 +130,24 @@ class GrblController(serial.Serial):
 
         return self.machineCoordinates
 
+    def getBuildInfo(self, debug=False):
+        pass
+
+    def getGrblState(self):
+        pass
+
+    def getGCodeParameters(self):
+        pass
+
+    def setGCodeParameter(self, parameterName, value):
+        pass
+
+    def getStartupGCode(self):
+        pass
+
+    def setStartupGCode(self):
+        pass
+
     def getStatus(self, debug=False):
         # get current machine coordinates
         gcode = "?\n"
