@@ -3,6 +3,7 @@ import sys
 
 debug = False
 
+
 class GrblController(serial.Serial):
     class Vector:
         def __init__(self, *args, **kwargs):
@@ -42,11 +43,11 @@ class GrblController(serial.Serial):
             super().__init__(*args, **kwargs)
 
     class HomingPositions:
-        topRightZUp = b'0'
-        topLeftZUp = b'1'
-        bottomRightZUp = b'2'
-        bottomLeftZUp = b'3'
-        topRightZDown = b'4'
+        topRightZUp = '0'
+        topLeftZUp = '1'
+        bottomRightZUp = '2'
+        bottomLeftZUp = '3'
+        topRightZDown = '4'
 
     def __init__(self, portDeviceName="/dev/ttyUSB0", portBaudRate=115200):
         self.spindleMotorSpeed = 0
@@ -79,11 +80,22 @@ class GrblController(serial.Serial):
                 print("Unexpected response " + str(line))
             sys.exit(1)
 
-        # TODO: DPP: Set spindle motor to 1000
+        # Unlock
+        self.send("$X")
 
-        # TODO: DPP: Set origin to lower left corner
+        # DPP: Set spindle motor to 1000
+        self.send("S1000")
 
-        # TODO: DPP: Turn off spindle motor
+        # DPP: Set homing origin to lower left corner
+        self.send('$23=' + GrblController.HomingPositions.bottomLeftZUp)
+
+        # DPP: Turn off spindle motor
+        self.send("M5")
+
+        # DPP: Set acceleration
+        self.send("$120=10")  # x 10mm/s
+        self.send("$121=10")  # y
+        self.send("$122=10")  # z
 
         # No point querying machineCoordinates with ? as they will always be inaccurate
         # since the message returned will be something like
@@ -118,8 +130,8 @@ class GrblController(serial.Serial):
 
         return self.machineCoordinates
 
-    def getStatusReport(self, debug=False):
-        # get status
+    def getStatus(self, debug=False):
+        # get current machine coordinates
         gcode = "?\n"
 
         gcode = gcode.encode('utf-8')
@@ -134,13 +146,19 @@ class GrblController(serial.Serial):
             # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
             if line.startswith(b'<'):
                 statusReport = line.decode()
-                if debug:
-                    print('raw status report received was:', statusReport)
-            if line == b"ok\r\n":  # will I receive this at all?
+            if line == b"ok\r\n":
                 break
 
         return statusReport
 
+    def cut(self, *args, **kwargs):
+        raise RuntimeError("Function not implemented yet")
+
+    def cutClockwiseArc(self, *args, **kwargs):
+        raise RuntimeError("Function not implemented yet")
+
+    def cutCounterClockwiseArc(self, *args, **kwargs):
+        raise RuntimeError("Function not implemented yet")
 
     def cutToMachineCoordinates(self, *args, **kwargs):
         # parse args and fail if correct ones not there
@@ -155,18 +173,7 @@ class GrblController(serial.Serial):
             spindleSpeed = float(kwargs['spindleSpeed'])
 
         # Set speed of spindle motor, and run it
-        gcode = f"S{spindleSpeed} M3\n"
-
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
+        self.startSpindleMotor(spindleSpeed)
 
         gcode = f"G90 G53 G1 F{feedRate}"
         if newPosition.x is not None:
@@ -176,51 +183,17 @@ class GrblController(serial.Serial):
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
 
-        gcode += '\n'
-
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
-
-        # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
-        # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
-        #
-        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
-        gcode += "\n"
-
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
+        self.sendAndWait(gcode)  # This one needs a sendAndWait() else the self.getMachineCoordinates() will not return the correct result
 
         # get current machine coordinates
         return self.getMachineCoordinates()
 
+    def move(self, *args, **kwargs):
+        raise RuntimeError("Function not implemented yet")
+
     def moveToMachineCoordinates(self, *args, **kwargs):
         # if spindle motor is running, stop it, regardless of what args are passed
-        gcode = f"M5\n"
-        if debug:
-            print("sending " + gcode.replace("\n", "\\n"))
-        super().write(gcode.encode('utf-8'))
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
+        self.stopSpindleMotor()
 
         # parse args and fail if correct ones not there
         # move to new position
@@ -232,35 +205,8 @@ class GrblController(serial.Serial):
             gcode += f" Y{newPosition.y}"
         if newPosition.z is not None:
             gcode += f" Z{newPosition.z}"
-        gcode += '\n'
 
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
-
-        # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
-        # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
-        #
-        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
-        gcode += "\n"
-
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
+        self.sendAndWait(gcode)  # This one needs a sendAndWait() else the self.getMachineCoordinates() will not return the correct result
 
         # get current machine coordinates
         return self.getMachineCoordinates()
@@ -268,34 +214,14 @@ class GrblController(serial.Serial):
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
     def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
         self.homingPosition = homingPosition
-        gcode = b'$23=' + homingPosition + b'\n'
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line == b"ok\r\n":
-                break
-
-        gcode = b'$H\n'
-        if debug:
-            print("sending " + str(gcode))  # Homing Cycle.
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line == b"ok\r\n":
-                break
+        self.send('$23=' + homingPosition)
+        self.send('$H')  # This does not need a sendAndWait() in order for self.getMachineCoordinates() to succeed, because $H is fully synchronous already.
 
         # Unlike other commands $H doesn't seem to need a G4 P0.01 to force sync.
         return self.getMachineCoordinates()
 
-    def sendAndWait(self, gcode):
+    def send(self, gcode):
         gcode += '\n'
-
         gcode = gcode.encode('utf-8')
         if debug:
             print("sending " + str(gcode))
@@ -306,60 +232,56 @@ class GrblController(serial.Serial):
                 print("received " + str(line))
             if line in [b"ok\r\n", b""]:
                 break
+            if b'error:' in line:
+                raise RuntimeError("Error during send(): " + str(line))
 
+    def sendAndWait(self, gcode):
+        self.send(gcode)
         # This is to ensure the command finishes executing so that getMachineCoordinates() will return a valid result
         # See https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface#synchronization:~:text=to%20insert%20a-,G4%20P0.01,-dwell%20command%2C%20where
         #
-        gcode = "G4 P0.01"  # it means "dwell for 0.01 second".  It's a trick to guarantee synchronization. See link above.
-        gcode += "\n"
+        return self.send('G4 P0.01')
 
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b""]:
-                break
+    def sendFile(self, fileName):
+        # Set default coordinate system (54)
+        self.send("G54")
 
-        # get current machine coordinates
-        return self.getMachineCoordinates()
+        print(self.getMachineCoordinates())
+
+        with open(
+                fileName,
+                "rt") as gcodeFile:
+            lineNumber = 1
+            for gcodeLine in gcodeFile:
+                gcode = gcodeLine.rstrip()
+                print(fileName + "(" + str(lineNumber) + ") " + gcode)
+                self.send(gcode)
+                lineNumber += 1
+
+    def setOrigin(self, *args, **kwargs):
+        if not args:
+            self.send("G10 P1 L20 X0 Y0 Z0")  # Allegedly P1 means the G54 coordinate system.
+            return
+
+        if args and isinstance(args[0], GrblController.Vector):
+            newPosition = args[0]
+        else:
+            newPosition = GrblController.Vector(*args, **kwargs)
+
+        self.send(f'G10 P1 L2 X{newPosition.x} Y{newPosition.y} Z{newPosition.z}')
 
     def startSpindleMotor(self, speed=1000):
         self.spindleMotorSpeed = speed
-        gcode = f'S{speed} \r\n'
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b'']:
-                break
-
+        self.send(f'S{speed}')
         return speed
 
     def stopSpindleMotor(self, speed=0):
         self.spindleMotorSpeed = speed
-        gcode = f'S{speed} M5\n'
-        gcode = gcode.encode('utf-8')
-        if debug:
-            print("sending " + str(gcode))
-        super().write(gcode)
-        while True:
-            line = super().readline()
-            if debug:
-                print("received " + str(line))
-            if line in [b"ok\r\n", b'']:
-                break
+        self.send(f'S{speed} M5')
         return speed
 
     def unlock(self):
-        self.sendAndWait("$X")
+        self.send("$X")  # doesn't require a sendAndWait() because it's effective immediately.
         return self.getMachineCoordinates()
 
 
