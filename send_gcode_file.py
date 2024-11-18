@@ -2,7 +2,7 @@ from datetime import datetime
 
 from GrblController import *
 
-workPieceLowerLeftOriginMachineCoordinates = GrblController.Vector(-405.000, -297.000, -76.0)
+workPieceLowerLeftOriginMachineCoordinates = GrblController.Vector(-405.000, -297.000, -81.0)
 
 
 if __name__ == "__main__":
@@ -25,7 +25,12 @@ if __name__ == "__main__":
     # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.5 f200 cw.gcode")
     # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.5 f200 ccw.gcode")
     # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.5 f100 cw.gcode")
-    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.5 f100 ccw.gcode")
+    # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover -5.5 f100 ccw.gcode")
+
+    #grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover 0-8.5 f800 cw.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover 0-8.5 f200 cw.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover 0-12.5 f800 cw.gcode")
+    grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - toad-ol.birch plywood.B/toadol roundover 0-12.5 f200 cw.gcode")
     finish = datetime.now()
     print(f'Elapsed time was {finish - start}')
 

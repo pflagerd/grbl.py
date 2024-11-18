@@ -180,7 +180,10 @@ class GrblController(serial.Serial):
 
     def cutToMachineCoordinates(self, *args, **kwargs):
         # parse args and fail if correct ones not there
-        newPosition = GrblController.Vector(*args, **kwargs)
+        if args and isinstance(args[0], GrblController.Vector):
+            newPosition = args[0]
+        else:
+            newPosition = GrblController.Vector(*args, **kwargs)
 
         feedRate = 400
         if 'feedRate' in kwargs:
@@ -213,9 +216,13 @@ class GrblController(serial.Serial):
         # if spindle motor is running, stop it, regardless of what args are passed
         self.stopSpindleMotor()
 
+        if args and isinstance(args[0], GrblController.Vector):
+            newPosition = args[0]
+        else:
+            newPosition = GrblController.Vector(*args, **kwargs)
+
         # parse args and fail if correct ones not there
         # move to new position
-        newPosition = GrblController.Vector(*args, **kwargs)
         gcode = f"G90 G53 G0"
         if newPosition.x is not None:
             gcode += f" X{newPosition.x}"
@@ -273,6 +280,7 @@ class GrblController(serial.Serial):
             for gcodeLine in gcodeFile:
                 gcode = gcodeLine.rstrip()
                 print(fileName + "(" + str(lineNumber) + ") " + gcode)
+                self.getStatus(True)
                 self.send(gcode)
                 lineNumber += 1
 
