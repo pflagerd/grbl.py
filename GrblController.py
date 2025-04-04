@@ -275,18 +275,21 @@ class GrblController(serial.Serial):
 
         with open(
                 fileName,
-                "rt") as gcodeFile:
-            lineNumber = 1
-            for gcodeLine in gcodeFile:
-                gcode = gcodeLine.strip()
-                if gcode == "":
-                    continue  # skip empty strings
-                if gcode.startswith(";"):
-                    continue  # skip comment string
-                print(fileName + "(" + str(lineNumber) + ") " + gcode)
-                self.getStatus(True)
-                self.send(gcode)
-                lineNumber += 1
+                "r") as gcodeFile:
+            self.sendLines(gcodeFile.read())
+
+    def sendLines(self, gcodeLines):
+        lineNumber = 1
+        for gcodeLine in gcodeLines:
+            gcode = gcodeLine.strip()
+            if gcode == "":
+                continue  # skip empty strings
+            if gcode.startswith(";"):
+                continue  # skip comment string
+            print("(" + str(lineNumber) + ") " + gcode)
+            self.getStatus(True)
+            self.send(gcode)
+            lineNumber += 1
 
     def setOrigin(self, *args, **kwargs):
         if not args:
