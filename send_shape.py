@@ -48,7 +48,8 @@ def parseGcodeLine(gcode_string):
         'suffix': suffix
     }
 
-def transformShape(gcodeInputLines, XOffset = 0, YOffset = 0, ZFeed = 50, XYFeed = 400):
+
+def transformShape(gcodeInputLines, XOffset=0, YOffset=0, ZFeed=50, XYFeed=400):
     gcodeOutputLines = ""
 
     for gcodeInputLine in gcodeInputLines.split('\n'):
@@ -69,13 +70,14 @@ def transformShape(gcodeInputLines, XOffset = 0, YOffset = 0, ZFeed = 50, XYFeed
 
     return gcodeOutputLines
 
+
 if __name__ == "__main__":
     with open(
             "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/slow cut 5.6 ball nose 2mm sd0.1 fr200 pr100/conventional.outside.shape.gcode",
             "r") as gcodeFile:
         gcodeInputLines = gcodeFile.read()
 
-    transformShape(gcodeInputLines)
+    gcodeOutputLines = transformShape(gcodeInputLines)
 
     safeZAboveZOrigin = 5
 
