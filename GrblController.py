@@ -278,7 +278,11 @@ class GrblController(serial.Serial):
                 "rt") as gcodeFile:
             lineNumber = 1
             for gcodeLine in gcodeFile:
-                gcode = gcodeLine.rstrip()
+                gcode = gcodeLine.strip()
+                if gcode == "":
+                    continue  # skip empty strings
+                if gcode.startswith(";"):
+                    continue  # skip comment string
                 print(fileName + "(" + str(lineNumber) + ") " + gcode)
                 self.getStatus(True)
                 self.send(gcode)
