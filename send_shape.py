@@ -49,7 +49,10 @@ def parseGcodeLine(gcode_string):
     }
 
 
-def transformShape(gcodeInputLines, XOffset=0, YOffset=0, ZFeed=50, XYFeed=400):
+def transformShape(gcodeInputLines, XOffset=0.0, YOffset=0.0, ZDepth=-1.0, ZFeed=50.0, XYFeed=400.0):
+    # if XOffset < 0 or YOffset < 0 or ZFeed < 0 or XYFeed < 0:
+    #     raise ValueError("XOffset < 0 or YOffset < 0 or ZFeed < 0 or XYFeed < 0!")
+
     gcodeOutputLines = ""
 
     for gcodeInputLine in gcodeInputLines.split('\n'):
@@ -58,26 +61,31 @@ def transformShape(gcodeInputLines, XOffset=0, YOffset=0, ZFeed=50, XYFeed=400):
 
         gcodeOutputLine = ''
         gcodeOutputLine += parsedGCodeLine['prefix'] if parsedGCodeLine['prefix'] else ""
-        gcodeOutputLine += ("X" + str(parsedGCodeLine['X'] + XOffset)) if parsedGCodeLine['X'] else ""
-        gcodeOutputLine += ("Y" + str(parsedGCodeLine['Y'] + YOffset)) if parsedGCodeLine['Y'] else ""
-        gcodeOutputLine += ("Z" + str(parsedGCodeLine['Z'])) if parsedGCodeLine['Z'] else ""
-        gcodeOutputLine += ("I" + str(parsedGCodeLine['I'] + XOffset)) if parsedGCodeLine['I'] else ""
-        gcodeOutputLine += ("J" + str(parsedGCodeLine['J'] + YOffset)) if parsedGCodeLine['J'] else ""
+        gcodeOutputLine += f"X{parsedGCodeLine['X'] + XOffset:.4f}" if parsedGCodeLine['X'] else ""
+        gcodeOutputLine += f"Y{parsedGCodeLine['Y'] + YOffset:.4f}" if parsedGCodeLine['Y'] else ""
+        gcodeOutputLine += f"Z{ZDepth:.4f}" if parsedGCodeLine['Z'] else ""
+        gcodeOutputLine += f"I{parsedGCodeLine['I']:.4f}" if parsedGCodeLine['I'] else ""
+        gcodeOutputLine += f"J{parsedGCodeLine['J']:.4f}" if parsedGCodeLine['J'] else ""
         if parsedGCodeLine['F']:
-            gcodeOutputLine += ("F" + str(ZFeed)) if parsedGCodeLine['Z'] else ("F" + str(XYFeed))
+            gcodeOutputLine += f"F{ZFeed:.4f}" if parsedGCodeLine['Z'] else f"F{XYFeed:.4f}"
         print("output: " + gcodeOutputLine)
-        gcodeOutputLines += gcodeOutputLine
+        gcodeOutputLines += gcodeOutputLine + '\n'
 
     return gcodeOutputLines
 
 
 if __name__ == "__main__":
-    with open(
-            "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/slow cut 5.6 ball nose 2mm sd0.1 fr200 pr100/conventional.outside.shape.gcode",
-            "r") as gcodeFile:
+    inputFileName = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/slow cut 5.6 ball nose 2mm sd0.1 fr200 pr100/conventional.outside.shape.gcode"
+    with open(inputFileName, "r") as gcodeFile:
         gcodeInputLines = gcodeFile.read()
 
-    gcodeOutputLines = transformShape(gcodeInputLines)
+    #gcodeOutputLines = transformShape(gcodeInputLines)
+    #gcodeOutputLines = transformShape(gcodeInputLines, 0, 165.4142)
+    gcodeOutputLines = transformShape(gcodeInputLines, -3.0487, 159.0857)
+
+    outputFileName = inputFileName.replace(".gcode", ".transformed.gcode")
+    with open(outputFileName, "w") as gcodeFile:
+        gcodeFile.write(gcodeOutputLines)
 
     safeZAboveZOrigin = 5
 
