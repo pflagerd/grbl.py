@@ -33,8 +33,8 @@ def main(args):
     facingDepth = 0.0  # mm cutting depth
 
     cutter = type('', (), {})()
-    cutter.diameter = 19  # mm diameter
-    cutter.overlapPercentage = 33  # 25 percent of diameter
+    cutter.diameter = 25  # mm diameter
+    cutter.overlapPercentage = 33  # percent of diameter
     cutter.swatheWidth = cutter.diameter - cutter.diameter * cutter.overlapPercentage / 100  # width of cutter movement in y direction
     cutter.position = type('', (), {})()
     cutter.position.x = 0
@@ -54,10 +54,10 @@ def main(args):
 
     pattern = 'climb-cut' # 'bidirectional`
 
-    # Cut left-to-right, then right-to-left, and so on until done
     numberOfPasses = int(ceil(workPiece.size.y / cutter.swatheWidth + 1))  # The + 1 indicates that we are making an inclusive number of cuts (lines rather than spaces between the lines)
     cutter.swatheWidth *= (numberOfPasses - 1) / numberOfPasses
-    # except that we want to always end on a standard cut (not a climb cut), which means we want an odd number of passes
+
+    # except that if cutting `bidirectional` we want to always end on a standard cut (not a climb cut), which means we want an odd number of passes
     if pattern == 'bidirectional' and numberOfPasses % 2 == 0:
         cutter.swatheWidth *= numberOfPasses / (numberOfPasses + 1)
         numberOfPasses += 1

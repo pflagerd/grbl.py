@@ -75,13 +75,13 @@ def transformShape(gcodeInputLines, XOffset=0.0, YOffset=0.0, ZDepth=-1.0, ZFeed
 
 
 if __name__ == "__main__":
-    inputFileName = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/slow cut 5.6 ball nose 2mm sd0.1 fr200 pr100/conventional.outside.shape.gcode"
+    inputFileName = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb.gcode"
     with open(inputFileName, "r") as gcodeFile:
         gcodeInputLines = gcodeFile.read()
 
     #gcodeOutputLines = transformShape(gcodeInputLines)
-    #gcodeOutputLines = transformShape(gcodeInputLines, 0, 165.4142)
-    gcodeOutputLines = transformShape(gcodeInputLines, -3.0487, 159.0857)
+    #gcodeOutputLines = transformShape(gcodeInputLines, -0.2046, 160.6439)
+    gcodeOutputLines = transformShape(gcodeInputLines, 179.862, 90.6404)
 
     outputFileName = inputFileName.replace(".gcode", ".transformed.gcode")
     with open(outputFileName, "w") as gcodeFile:
