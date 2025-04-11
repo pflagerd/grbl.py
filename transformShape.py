@@ -49,7 +49,7 @@ def parseGcodeLine(gcode_string):
     }
 
 
-def transformShape(gcodeInputLines, XOffset=0.0, YOffset=0.0, ZDepth=-1.0, ZFeed=50.0, XYFeed=400.0):
+def transformShapeString(gcodeInputLines, XOffset=0.0, YOffset=0.0, ZDepth=-1.0, ZFeed=50.0, XYFeed=400.0):
     # if XOffset < 0 or YOffset < 0 or ZFeed < 0 or XYFeed < 0:
     #     raise ValueError("XOffset < 0 or YOffset < 0 or ZFeed < 0 or XYFeed < 0!")
 
@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     #gcodeOutputLines = transformShape(gcodeInputLines)
     #gcodeOutputLines = transformShape(gcodeInputLines, -0.2046, 160.6439)
-    gcodeOutputLines = transformShape(gcodeInputLines, 179.862, 90.6404)
+    gcodeOutputLines = transformShapeString(gcodeInputLines, 179.862, 90.6404)
 
     outputFileName = inputFileName.replace(".gcode", ".transformed.gcode")
     with open(outputFileName, "w") as gcodeFile:
