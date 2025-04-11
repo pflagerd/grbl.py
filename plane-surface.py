@@ -8,7 +8,8 @@ def main(args):
     doHomeCycle()  # -417.0, -307.0, -3.0
     setOriginToCurrentLocation()  # makes (X, Y, Z) = (0, 0, 0).  Uses G54 coordinates. Absolute.
 
-    moveInAStraightLineRapidly(10, 7, -86) # machine coordinates -407.000, -300.000, -89.0     -86.0
+    moveInAStraightLineRapidly(10, 7, -86) # machine coordinates -407.000, -300.000, -89.0
+    moveInAStraightLineRapidly(10, 7, -86) # machine coordinates -407.000, -300.000, -89.0
 
     setOriginToCurrentLocation()  # makes (X, Y, Z) = (0, 0, 0).  Uses G54 coordinates. Absolute.
 
