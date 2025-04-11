@@ -1,3 +1,13 @@
+# grbl.py
+A python binding for grbl gcode.
+
+Can be run interactively from the command line.  Has all usual GRBL gcode commands.
+
+Has command line equivalents as scripts for GRBL gcode.  G0, G1 etc.
+
+
+
+
 | FILE                                                      | WHAT'S IN IT                                                                                                                                                                                                              |
 |-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | cut-circular-pocket.py                                    | DON'T REMEMBER                                                                                                                                                                                                            |
@@ -9,7 +19,6 @@
 | cut_vertical_lines_single_pass.py                         | DON'T REMEMBER                                                                                                                                                                                                            |
 | cut_workpiece_perimeter_index_lines.py                    | Given a constant origin, found by homing and offsetting from home, this cuts a rectangle of given size. One should repeatedly refine the rectangle size until all of the largest extents workpiece is touched by the cut. |
 | find_home_and_set_origin.py                               | Executes homing cycle, and sets WC0 x and y based on that.                                                                                                                                                                |
-| findWorkPieceLowerLeftOriginMachineCoordinates.py         | DON'T REMEMBER                                                                                                                                                                                                            |
 | gcode parameter settings.txt                              | A snapshot of gcode parameter settings from some unknown date/time                                                                                                                                                        |
 | get_status.py                                             | DON'T REMEMBER                                                                                                                                                                                                            |
 | grbl.py                                                   | This is the original main library and repository name                                                                                                                                                                     |
@@ -30,3 +39,6 @@
 | simplest-terminal-ever.py                                 | DON'T REMEMBER                                                                                                                                                                                                            |
 | test_coordinate_systems.py                                | DON'T REMEMBER                                                                                                                                                                                                            |
 | test_coordinate_systems.py.log                            | Output from some unknown execution of test_coordinate_systems.py?                                                                                                                                                         |
+| transformShape.py                                         | transforms a given shape-gcode-file, updating X, Y, Z, and F parameters with supplied values                                                                                                                              |
+
+
