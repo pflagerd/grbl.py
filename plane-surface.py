@@ -2,6 +2,7 @@
 from grbl import *
 from math import *
 
+
 def main(args):
     initializeGrbl()
     doHomeCycle()  # -417.0, -307.0, -3.0
@@ -26,19 +27,18 @@ def main(args):
     workPiece.size.x = 400  # mm
     workPiece.size.y = 300  # mm
 
-    facingDepth = 0.0  # mm cutting depth
+    facingDepth = 0.5  # mm cutting depth
 
     cutter = type('', (), {})()
-    # cutter.diameter = 19  # mm diameter
-    cutter.diameter = 25
-    cutter.overlapPercentage = 33  # percent of diameter
-    cutter.swatheWidth = cutter.diameter - cutter.diameter * cutter.overlapPercentage / 100  # width of cutter movement in y direction
+    cutter.diameter = 25.0
+    cutter.overlapPercentage = 33.0  # percent of diameter
+    cutter.swatheWidth = cutter.diameter - cutter.diameter * cutter.overlapPercentage / 100.0  # width of cutter movement in y direction
     cutter.position = type('', (), {})()
     cutter.position.x = 0
     cutter.position.y = 0
     cutter.position.z = 0
 
-    cuttingSpeed = 400
+    cuttingSpeed = 400.0  # mm/m
 
     cuttingPlane = type('', (), {})()
     cuttingPlane.origin = type('', (), {})()
@@ -59,7 +59,7 @@ def main(args):
         cutter.swatheWidth *= numberOfPasses / (numberOfPasses + 1)
         numberOfPasses += 1
 
-    plungeSpeed = 5
+    plungeSpeed = 5  # mm/m
 
     while True:
         startSpindle(10000)  # start spindle
@@ -105,7 +105,7 @@ def main(args):
                     cutter.position.z = cuttingPlane.origin.z
                     moveInAStraightLine(cutter.position.x, cutter.position.y, cutter.position.z, plungeSpeed)  # cut slowly down into workpiece
 
-        cutter.position.z = dustShoeClearanceHeight    # raise the cutting tool to clearanceHeight above the current z-height, in case you want to do another (finishing) pass.
+        cutter.position.z = clearanceHeight    # raise the cutting tool to clearanceHeight above the current z-height, in case you want to do another (finishing) pass.
         if pattern == 'climb-cut':
             moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
         else:
@@ -118,7 +118,7 @@ def main(args):
         if response not in ["y", "Y"]:
             break
 
-    cutter.position.z = dustShoeClearanceHeight
+    cutter.position.z = clearanceHeight
     moveInAStraightLineRapidly(cutter.position.x, cutter.position.y, cutter.position.z)
 
     return 0
