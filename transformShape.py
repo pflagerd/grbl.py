@@ -74,7 +74,7 @@ def transformShapeString(gcodeInputLines, XOffset=0.0, YOffset=0.0, ZDepth=-1.0,
     return gcodeOutputLines
 
 
-if __name__ == "__main__":
+def main(args):
     inputFileName = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb.gcode"
     with open(inputFileName, "r") as gcodeFile:
         gcodeInputLines = gcodeFile.read()
@@ -87,23 +87,7 @@ if __name__ == "__main__":
     with open(outputFileName, "w") as gcodeFile:
         gcodeFile.write(gcodeOutputLines)
 
-    safeZAboveZOrigin = 5
 
-    grblController = GrblController()
-    print(grblController.runHomingCycle())
-    grblController.setOrigin(workPieceLowerLeftOriginMachineCoordinates)
-    # grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates.x, workPieceLowerLeftOriginMachineCoordinates.y)
-    # grblController.moveToMachineCoordinates(z=workPieceLowerLeftOriginMachineCoordinates.z + safeZAboveZOrigin)
-    # print(grblController.getMachineCoordinates())
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
 
-    start = datetime.now()
-
-    grblController.sendLines(gcodeOutputLines)
-    finish = datetime.now()
-    print(f'Elapsed time was {finish - start}')
-
-    # grblController.moveToMachineCoordinates(workPieceLowerLeftOriginMachineCoordinates[0],
-    #                                         workPieceLowerLeftOriginMachineCoordinates[1] + 280,
-    #                                         -5)
-    #grblController.moveToMachineCoordinates(z=safeZAboveZOrigin)
-    #grblController.moveToMachineCoordinates(0, 0)
