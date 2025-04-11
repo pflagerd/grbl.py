@@ -5,8 +5,13 @@ Can be run interactively from the command line.  Has all usual GRBL gcode comman
 
 Has command line equivalents as scripts for GRBL gcode.  G0, G1 etc.
 
+<br><br>
 
+## TODO
 
+Update README [#2](https://github.com/pflagerd/grbl.py/issues/2)
+
+<br><br>
 
 | FILE                                                      | WHAT'S IN IT                                                                                                                                                                                                              |
 |-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
