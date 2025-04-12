@@ -114,8 +114,9 @@ def main(args):
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.5, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.6, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
+    #  Do these two in the opposite direction to raise grain and then trim it off.
     gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
 
     gcodeOutputLines += "G0Z5.0000\n"   # A Rapid positioning move at the Rapid Feed Rate to Z5.0
 
@@ -130,8 +131,9 @@ def main(args):
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.5, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.6, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
+    #  Do these two in the opposite direction to raise grain and then trim it off.
     gcodeOutputLines += transformGcode(lowerLeftStoClimbOutsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoClimbOutsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.6, 10.0, 50.0)
 
     #gcodeOutputLines = transformShapeString(gcodeInputLines, -0.2046, 160.6439)
     #gcodeOutputLines = transformShapeString(lowerLeftStoClimbInsideGcode, 179.862, 90.6404)
