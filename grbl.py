@@ -23,6 +23,7 @@ def doHomeCycle():
     sendToGrbl("G90")  # Set Absolute Coordinates
     sendToGrbl("G54")  # Coordinate System 1
     sendToGrbl("G10 L20 P1 X0 Y0 Z0")  # Reset origin
+    sendToGrbl('G4 P0.01')
 
 
 def drillHoleWithPecking(x, y, z, depth, pecks, peckSpeed):
@@ -62,14 +63,16 @@ def initializeGrbl():
     sendToGrbl("$X")  # Unlock
     sendToGrbl("G90")  # (Set to absolute positioning)
     sendToGrbl("G54")  # (Select G54 as the active WCS)
+    sendToGrbl('G4 P0.01')
 
 def moveInAnArcClockwise(x, y, z, i, j, speed):
     sendToGrbl("F" + str(speed) + " G2 X" + str(x) + " Y" + str(y) + " Z" + str(z) + " I" + str(i) + " J" + str(j))
+    sendToGrbl('G4 P0.01')
 
 
 def moveInAStraightLine(x, y, z, speed):
     sendToGrbl("F" + str(speed) + " G1 X" + str(x) + " Y" + str(y) + " Z" + str(z))
-
+    sendToGrbl('G4 P0.01')
 
 def moveInAStraightLineRapidly(x, y, z):
     COORDINATED_MOVE_AT_RAPID_RATE = 'G0'  # A Rapid positioning move at the Rapid Feed Rate. In Laser mode Laser will be turned off.
@@ -78,10 +81,12 @@ def moveInAStraightLineRapidly(x, y, z):
 
 def printGrblStatus():
     sendToGrbl("?")
+    sendToGrbl('G4 P0.01')
     sendToGrbl("$$")
     sendToGrbl("$#")
     sendToGrbl("$G")
     sendToGrbl("$N")
+    sendToGrbl('G4 P0.01')
 
 
 def sendToGrbl(line):  # line is aka BLOCK in g-code context.
@@ -95,12 +100,15 @@ def sendToGrbl(line):  # line is aka BLOCK in g-code context.
 
 
 def setOriginToCurrentLocation():
-    sendToGrbl("G10 L20 P1 X0 Y0 Z0")  # (Set the current position as the zero point for G54)
+    sendToGrbl("G10 P1 L20 X0 Y0 Z0")  # (Set the current position as the zero point for G54)
+    sendToGrbl('G4 P0.01')
 
 
 def startSpindle(speed):
     sendToGrbl("M3 S" + str(speed))
+    sendToGrbl('G4 P0.01')
 
 
 def stopSpindle():
     sendToGrbl("M5")
+    sendToGrbl('G4 P0.01')
