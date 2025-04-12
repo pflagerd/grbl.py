@@ -12,7 +12,6 @@ def runHomingCycleSetOriginSendGCodeFile(x, y, z, fileName):
     print(grblController.setOrigin(x, y, z))
 
     start = datetime.now()
-    # grblController.sendFile("/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb inside.transformed.gcode")
     grblController.sendFile(fileName)
     finish = datetime.now()
     print(f'Elapsed time was {finish - start}')
