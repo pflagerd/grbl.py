@@ -1,0 +1,5 @@
+workPieceLowerLeftOriginMachineCoordinates = (-405.000, -297.000, -81.0)
+
+# gcodeOutputLines = transformShapeString(gcodeInputLines, -0.2046, 160.6439)
+# gcodeOutputLines = transformShapeString(lowerLeftStoClimbInsideGcode, 179.862, 90.6404)
+

@@ -2,11 +2,6 @@ import sys
 
 from transformGcode import transformGcode
 
-workPieceLowerLeftOriginMachineCoordinates = (-405.000, -297.000, -81.0)
-
-# gcodeOutputLines = transformShapeString(gcodeInputLines, -0.2046, 160.6439)
-# gcodeOutputLines = transformShapeString(lowerLeftStoClimbInsideGcode, 179.862, 90.6404)
-
 
 def makeGcodeToadstoolStoLowerLeftCutout():
     lowerLeftStoConventionalInsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional inside.gcode"
