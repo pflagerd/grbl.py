@@ -280,7 +280,7 @@ class GrblController(serial.Serial):
 
     def sendLines(self, gcodeLines):
         lineNumber = 1
-        for gcodeLine in gcodeLines:
+        for gcodeLine in gcodeLines.split('\n'):
             gcode = gcodeLine.strip()
             if gcode == "":
                 continue  # skip empty strings
