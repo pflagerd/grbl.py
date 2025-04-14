@@ -6,13 +6,6 @@ from transformGcode import transformGcode
 workPieceLowerLeftOriginMachineCoordinates = (-333, -150, -68)
 
 if __name__ == "__main__":
-    safeZAboveZOrigin = 5
-
-    grblController = GrblController()
-    print(grblController.runHomingCycle())
-    print(grblController.moveToMachineCoordinates(*workPieceLowerLeftOriginMachineCoordinates))
-    print(grblController.setOrigin(*workPieceLowerLeftOriginMachineCoordinates))
-
     lowerLeftStoConventionalInsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional inside.gcode"
     with open(lowerLeftStoConventionalInsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoConventionalInsideGcode = gcodeFile.read()
@@ -28,6 +21,13 @@ if __name__ == "__main__":
     lowerLeftStoClimbOutsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb outside.gcode"
     with open(lowerLeftStoClimbOutsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoClimbOutsideGcode = gcodeFile.read()
+
+    safeZAboveZOrigin = 5
+
+    grblController = GrblController()
+    print(grblController.runHomingCycle())
+    print(grblController.moveToMachineCoordinates(*workPieceLowerLeftOriginMachineCoordinates))
+    print(grblController.setOrigin(*workPieceLowerLeftOriginMachineCoordinates))
 
     start = datetime.now()
 
