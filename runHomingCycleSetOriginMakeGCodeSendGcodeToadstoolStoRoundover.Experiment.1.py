@@ -13,19 +13,19 @@ if __name__ == "__main__":
     print(grblController.moveToMachineCoordinates(*workPieceLowerLeftOriginMachineCoordinates))
     print(grblController.setOrigin(*workPieceLowerLeftOriginMachineCoordinates))
 
-    lowerLeftStoConventionalInsideGcodeFilename = "/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional inside.gcode"
+    lowerLeftStoConventionalInsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional inside.gcode"
     with open(lowerLeftStoConventionalInsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoConventionalInsideGcode = gcodeFile.read()
 
-    lowerLeftStoClimbInsideGcodeFilename = "/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb inside.gcode"
+    lowerLeftStoClimbInsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb inside.gcode"
     with open(lowerLeftStoClimbInsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoClimbInsideGcode = gcodeFile.read()
 
-    lowerLeftStoConventionalOutsideGcodeFilename = "/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional outside.gcode"
+    lowerLeftStoConventionalOutsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto conventional outside.gcode"
     with open(lowerLeftStoConventionalOutsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoConventionalOutsideGcode = gcodeFile.read()
 
-    lowerLeftStoClimbOutsideGcodeFilename = "/home/oy753c/desktops/neon-candle/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb outside.gcode"
+    lowerLeftStoClimbOutsideGcodeFilename = "/home/oy753c/desktops/toadstool/carveco/Toolpaths/Toadstool Logo Scaled to 30 wide - sto.birch plywood.B/lower left sto climb outside.gcode"
     with open(lowerLeftStoClimbOutsideGcodeFilename, "r") as gcodeFile:
         lowerLeftStoClimbOutsideGcode = gcodeFile.read()
 
