@@ -36,11 +36,16 @@ def makeGcodeToadstoolStoLowerLeft():
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.2, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.4, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.6, 10.0, 100.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.7, 10.0, 100.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.8, 10.0, 50.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.8, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.0, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.1, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.2, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.3, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.4, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.5, 10.0, 50.0)
     #  Do these two in the opposite direction to raise grain and then trim it off.
-    gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, -5.8, 10.0, 400.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.8, 10.0, 400.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
 
     gcodeOutputLines += "G0Z5.0000\n"   # A Rapid positioning move at the Rapid Feed Rate to Z5.0
 
@@ -53,11 +58,16 @@ def makeGcodeToadstoolStoLowerLeft():
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.2, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.4, 10.0, 100.0)
     gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.6, 10.0, 100.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.7, 10.0, 100.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.8, 10.0, 50.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.8, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.0, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.1, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.2, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.3, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.4, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.5, 10.0, 50.0)
     #  Do these two in the opposite direction to raise grain and then trim it off.
-    gcodeOutputLines += transformGcode(lowerLeftStoClimbOutsideGcode, 0.0, 0.0, -5.8, 10.0, 400.0)
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -5.8, 10.0, 400.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoClimbOutsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalOutsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
 
     gcodeOutputLines += "M5\n"                  # Turn spindle motor off
     gcodeOutputLines += "G0Z5.0000\n"           # Rapidly raise the cutting head above the workpiece

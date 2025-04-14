@@ -38,11 +38,24 @@ if __name__ == "__main__":
     gcodeOutputLines += "G0Z5.0000\n"  # A Rapid positioning move at the Rapid Feed Rate to Z5.0
     gcodeOutputLines += "S10000M3\n"  # Set Spindle speed in RPM. 10,000 RPM.  Then turn the motor on.
 
-    finalZ = -6.5
-    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, finalZ, 10.0, 50.0)
-
-    #gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, finalZ, 100.0, 200.0)
-    #gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, finalZ, 100.0, 200.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -1.0, 100.0, 400.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -2.0, 50.0, 300.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -3.0, 30.0, 200.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -4.0, 20.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.0, 10.0, 50.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.2, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.4, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.6, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -5.8, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.0, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.1, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.2, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.3, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.4, 10.0, 100.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.5, 10.0, 50.0)
+    #  Do these two in the opposite direction to raise grain and then trim it off.
+    gcodeOutputLines += transformGcode(lowerLeftStoClimbInsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
+    gcodeOutputLines += transformGcode(lowerLeftStoConventionalInsideGcode, 0.0, 0.0, -6.5, 10.0, 200.0)
 
     gcodeOutputLines += "M5\n"                  # Turn spindle motor off
     gcodeOutputLines += "G0Z5.0000\n"           # Rapidly raise the cutting head above the workpiece
