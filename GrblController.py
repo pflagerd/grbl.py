@@ -1,6 +1,5 @@
 import re
 import serial
-import sys  # Kept even though unused here: other scripts get `sys` through `from GrblController import *`.
 import time
 import warnings
 
