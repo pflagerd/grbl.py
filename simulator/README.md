@@ -90,8 +90,11 @@ message unless it asks for a new one.
   | Simulator settings | What Grbl sends after a reset | Result |
   |---|---|---|
   | Defaults | Welcome message only; state Idle | Connects, no unlock needed |
-  | `$22=1` (homing on) | Welcome, `[MSG:'$H'\|'$X' to unlock]`; state Alarm | Connects, unlocks with `$X` |
+  | `$22=1` (homing on), then restart the simulator | Welcome, `[MSG:'$H'\|'$X' to unlock]`; state Alarm | Connects, unlocks with `$X` |
   | `$21=1` (hard limits on) | Welcome, `[MSG:Check Limits]`, unlock hint; state Alarm | `GrblLimitSwitchError` |
+
+  The `$22=1` row needs the simulator stopped and started again after the setting is changed:
+  Grbl only starts in Alarm for homing at power-up, and a soft reset keeps the state it had.
 
   The last row works because the pins always read as active, which Grbl takes for an engaged
   limit switch.
