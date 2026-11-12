@@ -12,7 +12,7 @@ if __name__ == '__main__':
     while looping:
         line = grblSerial.readline()
         print(str(line))
-        line = input("Enter something: ")
+        line = input("> ")
         if len(line) != 0:
             print(str(line))
             line += "\n"
