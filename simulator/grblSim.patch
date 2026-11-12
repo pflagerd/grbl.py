@@ -1,0 +1,62 @@
+diff --git a/Makefile b/Makefile
+index 9350656..8de8676 100644
+--- a/Makefile
++++ b/Makefile
+@@ -37,7 +37,9 @@ GRBL_VAL_OBJECTS = validator.o overridden_report.o $(GRBL_BASE_OBJECTS) $(AVR_OB
+ CLOCK      = 16000000
+ SIM_EXE_NAME   = grbl_sim.exe
+ VALIDATOR_NAME = gvalidate.exe
+-FLAGS = -g -O3
++# -fcommon: GCC 10+ defaults to -fno-common, which makes the tentative definitions in the
++# headers (wdt, sys_position, ...) fail to link with "multiple definition" errors.
++FLAGS = -g -O3 -fcommon
+ COMPILE    = $(CC) -Wall $(FLAGS) -DF_CPU=$(CLOCK)  -include config.h -I. -DPLAT_$(PLATFORM)
+ LINUX_LIBRARIES = -lrt -pthread
+ OSX_LIBRARIES =
+@@ -66,8 +68,11 @@ gvalidate: $(GRBL_VAL_OBJECTS)
+ ../planner.o: ../planner.c
+ 	$(COMPILE) -include planner_inject_accessors.c -c $< -o $@
+ 
++# -O0: Grbl's serial ring buffers are shared between the Grbl thread and the simulator thread
++# with no locking. Optimized code may store a buffer's head index before the data byte, so the
++# other thread can read a slot that has not been written yet. Unoptimized code keeps source order.
+ ../serial.o: ../serial.c
+-	$(COMPILE) -include serial_hooks.h -c $< -o $@
++	$(COMPILE) -O0 -include serial_hooks.h -c $< -o $@
+ 
+ ../main.o: ../main.c
+ 	$(COMPILE) -include rename_main.h -c $< -o $@
+diff --git a/platform_LINUX.c b/platform_LINUX.c
+index 426d6c3..66a6069 100644
+--- a/platform_LINUX.c
++++ b/platform_LINUX.c
+@@ -33,6 +33,10 @@
+ //any platform-specific setup that must be done before sim starts here
+ void platform_init()
+ {
++  // kbhit() asks select() whether fd 0 has data, but getchar() reads through stdio's buffer.
++  // With a buffered stdin, getchar() swallows every waiting byte at once, select() then
++  // reports nothing to read, and the rest of a line stalls until more input arrives.
++  setvbuf(stdin, NULL, _IONBF, 0);
+ }
+ 
+ //cleanup int here;
+diff --git a/serial.c b/serial.c
+index 5fd57db..10cbe26 100644
+--- a/serial.c
++++ b/serial.c
+@@ -42,8 +42,13 @@ uint8_t serial_read() {
+ }
+ 
+ 
++extern volatile uint8_t serial_tx_buffer_head;
++extern volatile uint8_t serial_tx_buffer_tail;
+ void simulate_write_interrupt(){
+-  while (UCSR0B & (1<<UDRIE0)){
++  // Run the transmit ISR while the TX buffer holds data, instead of relying on the UDRIE0 flag.
++  // Grbl sets that flag from its own thread and the ISR clears it from this one, with no
++  // locking, so the flag and the buffer can disagree. (Needs ../serial.c built with -O0, see Makefile.)
++  while (serial_tx_buffer_tail != serial_tx_buffer_head){
+ 	 interrupt_SERIAL_UDRE();
+ 	 sim_serial_out(UDR0);
+   }
