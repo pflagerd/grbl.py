@@ -16,21 +16,32 @@ script=$(realpath -- "$1"); shift      # resolve symlinks to the real file
 dir=${script%/*}                       # directory containing the script
 venv=$dir/.venv
 req=$dir/requirements.txt
-stamp=$venv/.requirements-installed    # marks the last successful install
+stamp=$venv/.requirements-installed    # marks the last verified requirements.txt
 
 if [ ! -x "$venv/bin/python" ]; then
     echo ".venv-helper: creating $venv" >&2
     python3 -m venv "$venv" || { rm -rf -- "$venv"; exit 1; }
 fi
 
-# Install when requirements.txt exists and is newer than the last install.
+# Fast path: if we've already verified this requirements.txt and it hasn't
+# changed since, trust it and skip the pip check entirely.
+#
+# Otherwise (first run, or requirements.txt newer than the stamp) make sure
+# every requirement is satisfied. The check is silent -- a dry run that touches
+# the network only if something is actually missing; we install, and say so,
+# only when there's a shortfall. Either way we re-stamp so the next run is fast.
 if [ -f "$req" ] && { [ ! -e "$stamp" ] || [ "$req" -nt "$stamp" ]; }; then
-    echo ".venv-helper: installing $req" >&2
-    "$venv/bin/pip" install --disable-pip-version-check -r "$req"
+    if "$venv/bin/pip" install --dry-run --disable-pip-version-check \
+            -r "$req" 2>/dev/null | grep -q '^Would install'; then
+        echo ".venv-helper: installing requirements from $req" >&2
+        "$venv/bin/pip" install --disable-pip-version-check -r "$req" >&2
+    fi
     touch "$stamp"
-else
+elif [ ! -f "$req" ] && ! "$venv/bin/python" -c 'import serial' 2>/dev/null; then
+    # No requirements.txt: fall back to installing pyserial directly, but only
+    # when it isn't already importable (the check above is silent).
     echo ".venv-helper: installing pyserial" >&2
-    "$venv/bin/pip" install --disable-pip-version-check pyserial
+    "$venv/bin/pip" install --disable-pip-version-check pyserial >&2
 fi
 
 # The same environment changes `source .venv/bin/activate` makes:

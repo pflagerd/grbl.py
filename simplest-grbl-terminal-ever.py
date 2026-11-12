@@ -7,6 +7,7 @@ port = "/dev/ttyUSB0"
 
 if __name__ == '__main__':
     grblSerial = serial.Serial(port, baudrate=115200)
+    print("^C or ^D to exit")
 
     looping = True
     while looping:
