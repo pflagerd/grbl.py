@@ -1,0 +1,42 @@
+#!/bin/sh
+# .venv-helper - run a Python script inside a .venv next to it.
+#
+# Use as a shebang:   #!/usr/bin/env .venv-helper
+# The kernel runs it as:  .venv-helper /path/to/script.py [args...]
+#
+# On first use (or when requirements.txt changes) it creates/updates
+# <script dir>/.venv from <script dir>/requirements.txt, then runs the
+# script with that venv's python, as if `source .venv/bin/activate` had
+# been done first.
+set -eu
+
+[ $# -ge 1 ] || { echo "usage: .venv-helper script.py [args...]" >&2; exit 2; }
+
+script=$(realpath -- "$1"); shift      # resolve symlinks to the real file
+dir=${script%/*}                       # directory containing the script
+venv=$dir/.venv
+req=$dir/requirements.txt
+stamp=$venv/.requirements-installed    # marks the last successful install
+
+if [ ! -x "$venv/bin/python" ]; then
+    echo ".venv-helper: creating $venv" >&2
+    python3 -m venv "$venv" || { rm -rf -- "$venv"; exit 1; }
+fi
+
+# Install when requirements.txt exists and is newer than the last install.
+if [ -f "$req" ] && { [ ! -e "$stamp" ] || [ "$req" -nt "$stamp" ]; }; then
+    echo ".venv-helper: installing $req" >&2
+    "$venv/bin/pip" install --disable-pip-version-check -r "$req"
+    touch "$stamp"
+else
+    echo ".venv-helper: installing pyserial" >&2
+    "$venv/bin/pip" install --disable-pip-version-check pyserial
+fi
+
+# The same environment changes `source .venv/bin/activate` makes:
+VIRTUAL_ENV=$venv
+PATH=$venv/bin:$PATH
+export VIRTUAL_ENV PATH
+unset PYTHONHOME
+
+exec "$venv/bin/python" "$script" "$@"
