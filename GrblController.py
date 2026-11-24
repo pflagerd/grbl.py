@@ -103,6 +103,15 @@ def limitPins(pinState):
     return "".join(letter for letter in "XYZ" if letter in (pinState or ""))
 
 
+def _spindleSpeedWord(speed):
+    """The G-code S word for a spindle speed: 'S10000' for 10000 or 10000.0, 'S12.5' for 12.5.
+
+    f'S{speed}' would give 'S10000.0' for a float. '%f' never uses scientific notation (str() of
+    1e16 is '1e+16'); stripping the trailing zeros, then a trailing '.', drops the '.0'.
+    """
+    return 'S' + ('%f' % float(speed)).rstrip('0').rstrip('.')
+
+
 @dataclass
 class MachineProfile:
     # Identity / connection
@@ -240,7 +249,7 @@ class GrblController(serial.Serial):
             raise
 
         # DPP: Set spindle motor speed
-        self.send(f'S{profile.defaultSpindleSpeed if profile else 10000}')
+        self.send(_spindleSpeedWord(profile.defaultSpindleSpeed if profile else 10000))
 
         # DPP: Set homing origin
         self.send('$23=' + self.homingPosition)
@@ -745,12 +754,12 @@ class GrblController(serial.Serial):
 
     def startSpindleMotor(self, speed=10000):
         self.spindleMotorSpeed = speed
-        self.send(f'S{speed}')
+        self.send(_spindleSpeedWord(speed))
         return speed
 
     def stopSpindleMotor(self, speed=0):
         self.spindleMotorSpeed = speed
-        self.send(f'S{speed} M5')
+        self.send(f'{_spindleSpeedWord(speed)} M5')
         return speed
 
     def unlock(self):

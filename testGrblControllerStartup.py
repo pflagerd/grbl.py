@@ -496,7 +496,45 @@ class SpindleDefaultTest(unittest.TestCase):
             with self.subTest(profile=profile):
                 controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
                 GrblController.__init__(controller, profile=profile)
-                self.assertTrue(any(written.startswith(b"S10000") for written in controller.written))
+                self.assertIn(b"S10000\n", controller.written)  # not b"S10000.0\n"
+
+    def testConstructorSendsAProfileSpeedOf10000Point0AsS10000(self):
+        profile = MachineProfile(name="test-machine", defaultSpindleSpeed=10000.0)
+        controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
+        GrblController.__init__(controller, profile=profile)
+        self.assertIn(b"S10000\n", controller.written)
+        self.assertNotIn(b"S10000.0\n", controller.written)
+
+    def testConstructorSendsAFractionalProfileSpeedAsIs(self):
+        profile = MachineProfile(name="test-machine", defaultSpindleSpeed=12.5)
+        controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
+        GrblController.__init__(controller, profile=profile)
+        self.assertIn(b"S12.5\n", controller.written)
+
+    def testCutWithAProfileSendsWholeAndFractionalSpeeds(self):
+        for speed, expected in ((10000.0, b"S10000\n"), (12.5, b"S12.5\n")):
+            with self.subTest(speed=speed):
+                controller = ScriptedGrblController(answerOk=True)
+                controller.profile = MachineProfile(name="test-machine", defaultSpindleSpeed=speed)
+                with mock.patch.object(GrblController, 'sendAndWait'), \
+                        mock.patch.object(GrblController, 'getMachineCoordinates'):
+                    controller.cutToMachineCoordinates(1, 2, 3)
+                self.assertEqual(controller.written[0], expected)
+
+    def testStartSpindleMotorFormatsTheSpeed(self):
+        for speed, expected in ((10000.0, b"S10000\n"), (12.5, b"S12.5\n"), (10000, b"S10000\n"),
+                                (1e16, b"S10000000000000000\n")):  # never b"S1e+16"
+            with self.subTest(speed=speed):
+                controller = ScriptedGrblController(answerOk=True)
+                controller.startSpindleMotor(speed)
+                self.assertEqual(controller.written, [expected])
+
+    def testStopSpindleMotorFormatsTheSpeed(self):
+        for speed, expected in ((0, b"S0 M5\n"), (0.0, b"S0 M5\n"), (12.5, b"S12.5 M5\n")):
+            with self.subTest(speed=speed):
+                controller = ScriptedGrblController(answerOk=True)
+                controller.stopSpindleMotor(speed)
+                self.assertEqual(controller.written, [expected])
 
 
 class LineParsingTest(unittest.TestCase):
