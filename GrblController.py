@@ -43,6 +43,10 @@ class GrblLimitSwitchError(GrblStartupError):
     """The controller reported [MSG:Check Limits]: a limit switch is engaged at connect."""
 
 
+class GrblSettingsError(GrblStartupError):
+    """A motion-critical $-setting ($3, $23, $20, $130-$132) differs from the machine profile."""
+
+
 def classifyLine(rawLine):
     """Classify one line received from Grbl by how it starts, not by where it comes in the sequence.
 
@@ -91,6 +95,15 @@ def parseStatusReport(text):
             name, value = field.split(':', 1)
             fields[name] = value
     return {'state': match.group(1), 'subState': match.group(2), 'fields': fields}
+
+
+def limitPins(pinState):
+    """The limit-switch letters in a status report's Pn: value, e.g. 'XZ' from 'XZP'. '' if none.
+
+    Pn: lists every input that is active: X, Y, Z for the limit pins, and P, D, H, R, S for the
+    probe, door, hold, reset and cycle-start pins. Only X, Y and Z matter for limit switches.
+    """
+    return "".join(letter for letter in "XYZ" if letter in (pinState or ""))
 
 
 @dataclass
@@ -148,6 +161,8 @@ class MachineProfile:
 
 
 class GrblController(serial.Serial):
+    HANDSHAKE_TIMEOUT = 10.0  # seconds; the default for handshakeDeadlineSeconds
+
     # Profile settings where a mismatch means motion in the wrong direction or without
     # bounds checking — a tool crash waiting to happen.  These raise instead of warning.
     CRITICAL_SETTINGS = ("$3", "$23", "$20", "$130", "$131", "$132")
@@ -192,7 +207,7 @@ class GrblController(serial.Serial):
         bottomLeftZUp = '3'
         topRightZDown = '4'
 
-    def __init__(self, portDeviceName=None, portBaudRate=None, handshakeDeadlineSeconds=10.0, resetOnConnect=False,
+    def __init__(self, portDeviceName=None, portBaudRate=None, handshakeDeadlineSeconds=None, resetOnConnect=False,
                  homeOnConnect=False, profile=None, applySettings=False):
         self.profile = profile
         self.grblVersion = None  # set during the handshake, for example '1.1h'
@@ -214,7 +229,7 @@ class GrblController(serial.Serial):
             # a wrong $23 drives the axes away from the switches and into the hard stops.
             if profile:
                 self._verifyProfileSettings(applySettings)
-        except RuntimeError:  # GrblStartupError, and the hard error for unsafe settings
+        except GrblStartupError:  # includes GrblSettingsError
             self.close()
             raise
 
@@ -302,7 +317,7 @@ class GrblController(serial.Serial):
                 break
         return version
 
-    def _handshake(self, deadlineSeconds=10.0, resetOnConnect=False):
+    def _handshake(self, deadlineSeconds=None, resetOnConnect=False):
         """Read Grbl's startup output by pattern, ask for its state with '?', and act on that state.
 
         Uses only self.readline(), self.write() and self.send(), so it can be tested with scripted lines.
@@ -327,6 +342,8 @@ class GrblController(serial.Serial):
         self.grblVersion = None        # for example '1.1h'
         self.startupState = None       # for example 'Alarm' or 'Idle'
         self._startupPartialLine = b""
+        if deadlineSeconds is None:
+            deadlineSeconds = self.HANDSHAKE_TIMEOUT
 
         start = self._now()
         deadline = start + deadlineSeconds
@@ -338,9 +355,8 @@ class GrblController(serial.Serial):
         try:
             if resetOnConnect:
                 # Soft reset (ctrl-x). Off by default: during motion it stops the steppers and position is lost.
-                if debug:
-                    print("sending " + str(b"\x18"))
-                self.write(b"\x18")
+                # drain=False: what the controller sends after the reset is exactly what the handshake reads.
+                self.softReset(drain=False)
 
             while status is None and self._now() < deadline:
                 if self._now() >= nextProbe:
@@ -398,6 +414,13 @@ class GrblController(serial.Serial):
                 raise GrblLimitSwitchError(self._startupFailureText(
                     "a limit switch is engaged ([MSG:Check Limits]). "
                     "Move the machine off the switch, or check the switch wiring, then connect again."))
+            engaged = limitPins(status['fields'].get('Pn'))
+            if engaged:
+                # The same refusal for a controller that was not reset, so never printed [MSG:Check Limits]:
+                # the status report's Pn: field shows the limit pin is active right now.
+                raise GrblLimitSwitchError(self._startupFailureText(
+                    f"a limit switch is engaged (the status report shows limit pin {engaged} active). "
+                    "Move the machine off the switch, or check the switch wiring, then connect again."))
             # Unlock
             self.send("$X")
 
@@ -442,7 +465,7 @@ class GrblController(serial.Serial):
                            for key, (expected, actual) in mismatches.items())
         critical = [key for key in mismatches if key in self.CRITICAL_SETTINGS]
         if critical:
-            raise RuntimeError(
+            raise GrblSettingsError(
                 f"Machine '{self.profile.name}' has unsafe $-settings ({', '.join(critical)} "
                 f"control motion direction/bounds): {report}. "
                 + ("Applying them failed." if applySettings
@@ -462,10 +485,9 @@ class GrblController(serial.Serial):
             if debug:
                 print("received " + str(line))
             # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
-            if b'Idle' in line and b'MPos' in line:
-                statusLines = line.decode('utf-8').split('|')
-                indexOfColon = statusLines[1].index(':')
-                self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
+            report = parseStatusReport(line.decode('utf-8', errors='replace'))
+            if report and report['state'] == 'Idle' and 'MPos' in report['fields']:
+                self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in report['fields']['MPos'].split(',')))
                 if debug:
                     print('machineCoordinates were read from status as ', self.machineCoordinates)
             if line == b"ok\r\n":
@@ -584,21 +606,29 @@ class GrblController(serial.Serial):
         return self.getMachineCoordinates()
 
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
-    def softReset(self):
+    def softReset(self, drain=True):
         # Ctrl-X: immediate reset.  Grbl reboots and re-prints its banner; drain it all
-        # so the next command doesn't read stale lines.
-        super().write(b'\x18')
+        # so the next command doesn't read stale lines.  Returns the drained lines.
+        # drain=False only sends ctrl-X, for a caller that reads the banner itself (the handshake).
+        if debug:
+            print("sending " + str(b'\x18'))
+        self.write(b'\x18')  # self, not super(), like send(): lets tests substitute a scripted controller
+        drained = []
+        if not drain:
+            return drained
         originalTimeout = self.timeout
         self.timeout = 2
         try:
             while True:
-                line = super().readline()
+                line = self.readline()
                 if line == b"":
                     break
                 if debug:
                     print("received " + str(line))
+                drained.append(line)
         finally:
             self.timeout = originalTimeout
+        return drained
 
     def tryHomingCycle(self, homingPosition):
         # Like runHomingCycle(), but a homing failure (switch not found / lost) returns
@@ -619,7 +649,15 @@ class GrblController(serial.Serial):
                     return None
                 if line.startswith(b"ALARM:"):
                     alarmCode = line.decode('utf-8', errors='replace').strip().partition(':')[2]
-                    self.softReset()
+                    afterReset = self.softReset()
+                    # As in the startup handshake: never unlock a machine that is sitting on a limit switch.
+                    engaged = limitPins(self.getPinState())
+                    if engaged or any(b"Check Limits" in resetLine for resetLine in afterReset):
+                        raise GrblLimitSwitchError(
+                            f"Homing toward $23={homingPosition} on {self.portDeviceName} failed with ALARM:{alarmCode}, "
+                            f"and a limit switch is engaged" + (f" (limit pin {engaged} active)" if engaged else
+                                                                " ([MSG:Check Limits])")
+                            + ". Not unlocked with $X. Move the machine off the switch, then try again.")
                     self.send("$X")  # reset after a homing alarm leaves Grbl locked
                     return alarmCode
                 if line == b"":

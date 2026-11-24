@@ -8,9 +8,13 @@ conversation is scripted from what the Grbl 1.1h firmware source says it sends.
 import inspect
 import unittest
 import warnings
+from unittest import mock
 
-from GrblController import (GrblController, GrblLimitSwitchError, GrblStartupError, GrblStateError,
-                            GrblVersionError, classifyLine, parseStatusReport)
+import serial
+
+from GrblController import (GrblController, GrblLimitSwitchError, GrblSettingsError, GrblStartupError,
+                            GrblStateError, GrblVersionError, MachineProfile, classifyLine, limitPins,
+                            parseStatusReport)
 
 blank = b"\r\n"
 welcome = b"Grbl 1.1h ['$' for help]\r\n"
@@ -37,9 +41,12 @@ class ScriptedGrblController(GrblController):
     is_open = False  # So that serial.Serial.close(), called from __del__, does nothing.
     timeout = 30     # Plain attribute replacing serial.Serial's property, which needs an open port.
 
-    def __init__(self, greeting=(), replies=None):
+    def __init__(self, greeting=(), replies=None, answerOk=False):
         # Deliberately does not call GrblController.__init__(): no serial port is opened.
+        # answerOk: any line written that has no scripted reply is answered with 'ok'.
         self.portDeviceName = "scripted-port"
+        self.answerOk = answerOk
+        self.portClosed = False
         self.incoming = list(greeting)
         self.replies = {written: list(replyList) for written, replyList in (replies or {}).items()}
         self.written = []
@@ -59,7 +66,12 @@ class ScriptedGrblController(GrblController):
         if replyList:
             reply = replyList.pop(0) if len(replyList) > 1 else replyList[0]
             self.incoming.extend(reply)
+        elif self.answerOk and data.endswith(b"\n"):
+            self.incoming.append(b"ok\r\n")
         return len(data)
+
+    def close(self):
+        self.portClosed = True
 
     def readline(self):
         if self.incoming:
@@ -72,13 +84,34 @@ class ScriptedGrblController(GrblController):
         return b""
 
 
-def scripted(greeting, status=None, extraReplies=None):
+def scripted(greeting, status=None, extraReplies=None, answerOk=False):
     """A scripted controller that answers $X, and answers '?' with the given status report (if any)."""
     replies = {b"$X\n": [unlockReply]}
     if status is not None:
         replies[b"?"] = [[status]]
     replies.update(extraReplies or {})
-    return ScriptedGrblController(greeting, replies)
+    return ScriptedGrblController(greeting, replies, answerOk)
+
+
+def settingsReply(settings):
+    """What Grbl sends in answer to $$: one '$n=value' line per setting, then 'ok'."""
+    return [f"{key}={value}\r\n".encode() for key, value in settings.items()] + [b"ok\r\n"]
+
+
+def scriptedSerialPort():
+    """Patches pyserial so that the real GrblController.__init__() can run on a ScriptedGrblController:
+    opening the port does nothing, and super().write()/super().readline() reach the script."""
+    patches = [mock.patch.object(serial.Serial, '__init__', lambda self, *args, **kwargs: None),
+               mock.patch.object(serial.Serial, 'write', ScriptedGrblController.write),
+               mock.patch.object(serial.Serial, 'readline', ScriptedGrblController.readline)]
+    for patch in patches:
+        patch.start()
+    return patches
+
+
+def stopPatches(patches):
+    for patch in patches:
+        patch.stop()
 
 
 class StartupHandshakeTest(unittest.TestCase):
@@ -161,6 +194,20 @@ class StartupHandshakeTest(unittest.TestCase):
                 self.assertEqual(controller.grblVersion, "1.1h")
                 self.assertIn(b"$X\n", controller.written)
 
+    def testLimitPinInTheStatusReportRefusesToUnlock(self):
+        # Not reset by opening the port, so no [MSG:Check Limits]; but Pn: shows the X limit pin active.
+        controller = scripted([], b"<Alarm|MPos:0.000,0.000,0.000|Bf:15,128|FS:0,0|Pn:X>\r\n",
+                              {b"$I\n": [buildInfoReply]})
+        with self.assertRaises(GrblLimitSwitchError) as raised:
+            controller._handshake()
+        self.assertNotIn(b"$X\n", controller.written)
+        self.assertIn("limit pin X", str(raised.exception))
+
+    def testProbePinIsNotALimitSwitch(self):
+        controller = scripted([blank, welcome, unlockHint], b"<Alarm|MPos:0.000,0.000,0.000|FS:0,0|Pn:P>\r\n")
+        controller._handshake()
+        self.assertIn(b"$X\n", controller.written)
+
     def testDoorOpenRaisesNamingTheState(self):
         controller = scripted([blank, welcome], b"<Door:0|MPos:0.000,0.000,0.000|FS:0,0>\r\n")
         with self.assertRaises(GrblStateError) as raised:
@@ -239,6 +286,112 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertNotIn("sys.exit", inspect.getsource(GrblController._handshake))
 
 
+class ConstructorTest(unittest.TestCase):
+    """The real GrblController.__init__(), run against a script: what happens after the handshake."""
+
+    def setUp(self):
+        self.addCleanup(stopPatches, scriptedSerialPort())
+
+    def profile(self, **expectedSettings):
+        return MachineProfile(name="test-machine", portDeviceName="profile-port",
+                              expectedSettings=expectedSettings or {"$3": "0", "$23": "3"})
+
+    def construct(self, machineSettings, **kwargs):
+        settingsReplies = [settingsReply(settings) for settings in machineSettings]
+        self.controller = scripted([blank, welcome, unlockHint], alarmStatus,
+                                   {b"$$\n": settingsReplies} if settingsReplies else {}, answerOk=True)
+        GrblController.__init__(self.controller, **kwargs)
+        return self.controller
+
+    def testSettingsAreVerifiedAfterTheHandshakeAndBeforeHoming(self):
+        controller = self.construct([{"$3": "0", "$23": "3"}], profile=self.profile(), homeOnConnect=True)
+        written = controller.written
+        self.assertLess(written.index(b"$X\n"), written.index(b"$$\n"))
+        self.assertLess(written.index(b"$$\n"), written.index(b"$H\n"))
+        self.assertEqual(controller.portDeviceName, "profile-port")
+        self.assertEqual(controller.grblVersion, "1.1h")
+
+    def testUnsafeSettingRaisesBeforeAnythingIsConfiguredOrMoves(self):
+        with self.assertRaises(GrblSettingsError) as raised:
+            self.construct([{"$3": "0", "$23": "0"}], profile=self.profile(), homeOnConnect=True)
+        self.assertIn("$23", str(raised.exception))
+        written = self.controller.written
+        self.assertNotIn(b"$H\n", written)
+        self.assertFalse([data for data in written if data.startswith(b"$23=")])  # nothing overwrote it
+        self.assertEqual(written[-1], b"$$\n")  # the settings check was the last thing done
+        self.assertTrue(self.controller.portClosed)
+
+    def testNonCriticalMismatchWarnsAndConnects(self):
+        with self.assertWarns(UserWarning):
+            self.construct([{"$110": "999.000"}], profile=self.profile(**{"$110": "500.000"}))
+        self.assertFalse(self.controller.portClosed)
+
+    def testApplySettingsCorrectsThenHomes(self):
+        controller = self.construct([{"$3": "0", "$23": "0"}, {"$3": "0", "$23": "3"}],
+                                    profile=self.profile(), applySettings=True, homeOnConnect=True)
+        written = controller.written
+        self.assertLess(written.index(b"$23=3\n"), written.index(b"$H\n"))
+        self.assertEqual(written.count(b"$$\n"), 2)  # re-read after applying
+
+    def testLimitSwitchStopsTheConstructorBeforeSettingsAreRead(self):
+        controller = scripted([blank, welcome, checkLimits, unlockHint], alarmStatus, answerOk=True)
+        with self.assertRaises(GrblLimitSwitchError):
+            GrblController.__init__(controller, profile=self.profile(), homeOnConnect=True)
+        self.assertNotIn(b"$$\n", controller.written)
+        self.assertNotIn(b"$X\n", controller.written)
+        self.assertTrue(controller.portClosed)
+
+    def testWithoutAProfileNoSettingsAreRead(self):
+        controller = self.construct([])
+        self.assertNotIn(b"$$\n", controller.written)
+        self.assertEqual(controller.portDeviceName, "/dev/ttyUSB0")
+        self.assertIsNone(controller.profile)
+
+    def testResetOnConnectGoesThroughSoftResetWithoutDraining(self):
+        controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
+        with mock.patch.object(GrblController, 'softReset', autospec=True,
+                               side_effect=lambda self, drain=True: self.write(b"\x18")) as softReset:
+            GrblController.__init__(controller, resetOnConnect=True)
+        softReset.assert_called_once_with(controller, drain=False)
+        self.assertEqual(controller.written[0], b"\x18")
+        self.assertEqual(controller.startupTranscript[0], "Grbl 1.1h ['$' for help]")  # the banner was not drained
+
+
+class AfterConnectTest(unittest.TestCase):
+    """Methods that use super().write()/super().readline(), run against a script."""
+
+    def setUp(self):
+        self.addCleanup(stopPatches, scriptedSerialPort())
+
+    def testGetMachineCoordinatesUpdatesOnlyWhenIdle(self):
+        controller = ScriptedGrblController(replies={b"?\n": [[idleStatus, b"ok\r\n"], [alarmStatus, b"ok\r\n"]]})
+        controller.machineCoordinates = None
+        position = controller.getMachineCoordinates()
+        self.assertEqual(str(position), "(-417.0, -307.0, -3.0)")
+        self.assertIs(controller.getMachineCoordinates(), position)  # an Alarm report does not replace it
+
+    def testTryHomingCycleReturnsTheAlarmAndUnlocksWhenNoSwitchIsEngaged(self):
+        controller = ScriptedGrblController(replies={
+            b"$H\n": [[b"ALARM:9\r\n"]],
+            b"\x18": [[blank, welcome, unlockHint]],
+            b"?\n": [[alarmStatus, b"ok\r\n"]],
+            b"$X\n": [unlockReply]}, answerOk=True)
+        self.assertEqual(controller.tryHomingCycle("3"), "9")
+        self.assertIn(b"$X\n", controller.written)
+
+    def testTryHomingCycleRefusesToUnlockOnAnEngagedSwitch(self):
+        for afterReset, status in (([blank, welcome, checkLimits, unlockHint], alarmStatus),
+                                   ([blank, welcome, unlockHint], b"<Alarm|MPos:0.000,0.000,0.000|Pn:Y>\r\n")):
+            with self.subTest(status=status):
+                controller = ScriptedGrblController(replies={
+                    b"$H\n": [[b"ALARM:9\r\n"]],
+                    b"\x18": [afterReset],
+                    b"?\n": [[status, b"ok\r\n"]]}, answerOk=True)
+                with self.assertRaises(GrblLimitSwitchError):
+                    controller.tryHomingCycle("3")
+                self.assertNotIn(b"$X\n", controller.written)
+
+
 class LineParsingTest(unittest.TestCase):
 
     def testClassifyLine(self):
@@ -276,6 +429,11 @@ class LineParsingTest(unittest.TestCase):
         self.assertEqual(parseStatusReport("<Hold:0|MPos:0.000,0.000,0.000>")["state"], "Hold")
         self.assertEqual(parseStatusReport("<Hold:0|MPos:0.000,0.000,0.000>")["subState"], "0")
         self.assertEqual(parseStatusReport("<Door:3|MPos:0.000,0.000,0.000>")["state"], "Door")
+
+    def testLimitPins(self):
+        self.assertEqual(limitPins("XZP"), "XZ")
+        self.assertEqual(limitPins("PD"), "")
+        self.assertEqual(limitPins(None), "")
 
     def testParseStatusReportRejectsOtherText(self):
         self.assertIsNone(parseStatusReport("ok"))
