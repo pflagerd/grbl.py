@@ -1,5 +1,6 @@
 /.venv/
 /.idea/
 /.run/
+/.claude/
 __pycache__
 *.kate-swp
