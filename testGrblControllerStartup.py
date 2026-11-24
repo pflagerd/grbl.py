@@ -365,6 +365,58 @@ class ConstructorTest(unittest.TestCase):
         self.assertNotIn(b"$X\n", controller.written)
         self.assertTrue(controller.portClosed)
 
+    # Argument checks: only the port, baud rate and profile are positional, and their types are checked before the
+    # port opens.
+
+    def assertRejectedBeforeOpening(self, *args, **kwargs):
+        controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
+        with mock.patch.object(serial.Serial, '__init__', autospec=True) as openPort:
+            with self.assertRaises(TypeError) as raised:
+                GrblController.__init__(controller, *args, **kwargs)
+        openPort.assert_not_called()
+        self.assertEqual(controller.written, [])
+        return str(raised.exception)
+
+    def testPortOfTheWrongTypeIsRejected(self):
+        message = self.assertRejectedBeforeOpening(115200)  # baud rate given where the port belongs
+        self.assertIn("portDeviceName", message)
+        self.assertIn("115200", message)
+
+    def testBaudRateOfTheWrongTypeIsRejected(self):
+        for baudRate in ("115200", 115200.0, True):
+            with self.subTest(baudRate=baudRate):
+                message = self.assertRejectedBeforeOpening("/dev/ttyUSB0", baudRate)
+                self.assertIn("portBaudRate", message)
+                self.assertIn(repr(baudRate), message)
+
+    def testProfileOfTheWrongTypeIsRejected(self):
+        message = self.assertRejectedBeforeOpening(profile={"name": "not a profile"})
+        self.assertIn("MachineProfile", message)
+
+    def testThirdPositionalArgumentMustBeAProfile(self):
+        message = self.assertRejectedBeforeOpening("/dev/ttyUSB0", 115200, 5.0)  # e.g. a deadline given by position
+        self.assertIn("profile", message)
+        self.assertIn("5.0", message)
+
+    def testFourthPositionalArgumentIsRejected(self):
+        # handshakeDeadlineSeconds and the other options must be named.
+        self.assertRejectedBeforeOpening("/dev/ttyUSB0", 115200, None, 10.0)
+
+    def testProfileByPositionWorks(self):
+        controller = scripted([blank, welcome, unlockHint], alarmStatus,
+                              {b"$$\n": [settingsReply({"$3": "0", "$23": "3"})]}, answerOk=True)
+        GrblController.__init__(controller, None, None, self.profile())
+        self.assertEqual(controller.portDeviceName, "profile-port")
+        self.assertIn(b"$$\n", controller.written)
+
+    def testPortAndBaudRateByPositionWithNamedArgumentsStillWork(self):
+        controller = scripted([blank, welcome, unlockHint], alarmStatus,
+                              {b"$$\n": [settingsReply({"$3": "0", "$23": "3"})]}, answerOk=True)
+        GrblController.__init__(controller, "/dev/ttyACM0", 115200, profile=self.profile(), homeOnConnect=True)
+        self.assertEqual(controller.portDeviceName, "/dev/ttyACM0")  # explicit arguments win over the profile
+        self.assertEqual(controller.portBaudRate, 115200)
+        self.assertIn(b"$H\n", controller.written)
+
     def testWithoutAProfileNoSettingsAreRead(self):
         controller = self.construct([])
         self.assertNotIn(b"$$\n", controller.written)

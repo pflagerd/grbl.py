@@ -204,8 +204,17 @@ class GrblController(serial.Serial):
         bottomLeftZUp = '3'
         topRightZDown = '4'
 
-    def __init__(self, portDeviceName=None, portBaudRate=None, handshakeDeadlineSeconds=None, resetOnConnect=False,
-                 homeOnConnect=False, profile=None, applySettings=False):
+    def __init__(self, portDeviceName=None, portBaudRate=None, profile=None, *, handshakeDeadlineSeconds=None,
+                 resetOnConnect=False, homeOnConnect=False, applySettings=False):
+        # Only the port, the baud rate and the profile may be passed by position; everything after the * must be named.
+        # Their types are checked before the port is opened, so that a positional mistake fails at once.
+        if portDeviceName is not None and not isinstance(portDeviceName, str):
+            raise TypeError(f"portDeviceName must be a str such as '/dev/ttyUSB0', not {portDeviceName!r}")
+        if portBaudRate is not None and (isinstance(portBaudRate, bool) or not isinstance(portBaudRate, int)):
+            raise TypeError(f"portBaudRate must be an int such as 115200, not {portBaudRate!r}")
+        if profile is not None and not isinstance(profile, MachineProfile):
+            raise TypeError(f"profile must be a MachineProfile, not {profile!r}")
+
         self.profile = profile
         self.grblVersion = None  # set during the handshake, for example '1.1h'
         self.spindleMotorSpeed = 0
