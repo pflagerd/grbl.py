@@ -10,9 +10,8 @@ debug = False
 # What Grbl 1.1h can send at startup is documented in https://github.com/pflagerd/grbl.py/issues/13,
 # with links to the firmware source (https://github.com/gnea/grbl, version 1.1h build 20190830).
 
-# Firmware versions the startup handshake accepts: Grbl 1.1 with any letter (1.1f, 1.1h, ...).
-_supportedVersionPattern = re.compile(r"^1\.1[a-z]$")
-# The version on the owner's machines. Any other accepted version connects with a warning.
+# The firmware version on the owner's machines. Any other version, or none, connects with a warning:
+# the version never stops the handshake.
 _testedVersion = "1.1h"
 # report.c report_init_message(): "\r\nGrbl 1.1h ['$' for help]\r\n"
 _welcomePattern = re.compile(r"Grbl (\S+) \['\$' for help\]")
@@ -31,10 +30,6 @@ _probeRetrySeconds = 1.0
 
 class GrblStartupError(RuntimeError):
     """The startup handshake with the controller failed. The message says what was received."""
-
-
-class GrblVersionError(GrblStartupError):
-    """The controller reported a firmware version other than Grbl 1.1x, or none could be determined."""
 
 
 class GrblStateError(GrblStartupError):
@@ -371,9 +366,6 @@ class GrblController(serial.Serial):
                 kind, text = self._readStartupLine()
                 if kind == 'welcome':
                     self.grblVersion = _welcomePattern.search(text).group(1)
-                    if not _supportedVersionPattern.match(self.grblVersion):
-                        raise GrblVersionError(self._startupFailureText(
-                            f"expected Grbl 1.1x firmware but the controller reported version {self.grblVersion!r}."))
                     # The controller has just reset, so any '?' sent before now was lost. Probe again at once
                     # rather than waiting for the next retry. Grbl sends nothing to mark the end of its startup
                     # output, but the status report arrives after the startup messages ([MSG:Check Limits] too).
@@ -398,16 +390,13 @@ class GrblController(serial.Serial):
             raise GrblStateError(self._startupFailureText(
                 f"the controller is in the {self.startupState} state; it must be Idle or Alarm to continue."))
 
+        # The owner's ruling: the firmware version never raises. Anything but 1.1h only warns.
         if self.grblVersion is None:
-            raise GrblVersionError(self._startupFailureText(
-                "could not determine the firmware version (no welcome message, and no [VER:...] reply to $I)."))
-        if not _supportedVersionPattern.match(self.grblVersion):
-            raise GrblVersionError(self._startupFailureText(
-                f"expected Grbl 1.1x firmware but the controller reported version {self.grblVersion!r}."))
-        if self.grblVersion != _testedVersion:
-            # Accepted, since every 1.1 release speaks the same protocol, but not the version this code was tested on.
+            warnings.warn(f"Grbl on {self.portDeviceName}: could not determine the firmware version (no welcome "
+                          f"message, and no [VER:...] reply to $I); expected {_testedVersion}. Continuing.")
+        elif self.grblVersion != _testedVersion:
             warnings.warn(f"Grbl on {self.portDeviceName} reports version {self.grblVersion}; "
-                          f"this code was tested on {_testedVersion}.")
+                          f"expected {_testedVersion}. Continuing.")
 
         for startupLine, result in self.startupLineResults:
             if result != "ok":

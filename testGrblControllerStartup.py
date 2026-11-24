@@ -13,7 +13,7 @@ from unittest import mock
 import serial
 
 from GrblController import (GrblController, GrblLimitSwitchError, GrblSettingsError, GrblStartupError,
-                            GrblStateError, GrblVersionError, MachineProfile, classifyLine, limitPins,
+                            GrblStateError, MachineProfile, classifyLine, limitPins,
                             parseStatusReport)
 
 blank = b"\r\n"
@@ -172,7 +172,7 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertIn("scripted-port", str(raised.exception))
         self.assertIn("Received nothing at all", str(raised.exception))
 
-    # Version policy: 1.1h silently, any other 1.1x with a warning, anything else raises.
+    # Version policy (the owner: "Do not raise at all."): 1.1h silently, any other version or none with a warning.
 
     def testGrbl11hConnectsWithoutAWarning(self):
         controller = scripted([blank, welcome, unlockHint], alarmStatus)
@@ -196,13 +196,15 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertEqual(controller.grblVersion, "1.1g")
         self.assertIn("1.1g", str(warned.warning))
 
-    def testWrongMajorVersionRaisesQuotingTheLine(self):
-        controller = scripted([blank, b"Grbl 0.9j ['$' for help]\r\n"])
-        with self.assertRaises(GrblVersionError) as raised:
+    def testOtherMajorVersionWarnsAndConnects(self):
+        controller = scripted([blank, b"Grbl 0.9j ['$' for help]\r\n", unlockHint], alarmStatus)
+        with self.assertWarns(UserWarning) as warned:
             controller._handshake()
-        self.assertIn("Grbl 0.9j ['$' for help]", str(raised.exception))
-        self.assertLess(controller.clock, 1.0)  # raised as soon as the line is seen, without waiting
-        self.assertEqual(controller.written, [b"?"])  # only the first probe, lost in the reset; no $X
+        self.assertIn("0.9j", str(warned.warning))
+        self.assertIn("1.1h", str(warned.warning))
+        self.assertEqual(controller.grblVersion, "0.9j")
+        self.assertEqual(controller.startupState, "Alarm")
+        self.assertEqual(controller.written, [b"?", b"?", b"$X\n"])
 
     def testStrayBytesBeforeTheGreetingAreTolerated(self):
         for greeting in ([b"\xff\x00\r\n", welcome, unlockHint],
@@ -261,10 +263,13 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertIn("Run", str(raised.exception))
         self.assertNotIn(b"$I\n", controller.written)  # $I is only accepted in Idle and Alarm
 
-    def testNoResetAndNoVersionReplyRaisesVersionError(self):
+    def testNoResetAndNoVersionReplyWarnsAndConnects(self):
         controller = scripted([], idleStatus)  # nothing answers $I
-        with self.assertRaises(GrblVersionError):
+        with self.assertWarns(UserWarning) as warned:
             controller._handshake()
+        self.assertIn("could not determine the firmware version", str(warned.warning))
+        self.assertIsNone(controller.grblVersion)
+        self.assertEqual(controller.startupState, "Idle")
         self.assertLessEqual(controller.clock, 10.5)
 
     def testResetOnConnectSendsCtrlXFirst(self):
