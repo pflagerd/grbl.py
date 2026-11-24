@@ -1,0 +1,17 @@
+{
+  "bits": {
+    "25mm": {
+      "diameter": 25.0
+    },
+    "36mm": {
+      "diameter": 36.0
+    },
+    "38mm": {
+      "diameter": 38.0
+    },
+    "50mm": {
+      "diameter": 50.0
+    }
+  },
+  "schemaVersion": 1
+}

@@ -236,12 +236,14 @@ class DepthTests(unittest.TestCase):
         self.assertFalse(ssb.checkZRoom(-80.0, 1.0, '81.099')[0])
 
 
-class BitFileTests(unittest.TestCase):
+class BitDirectoryTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory)
         self.path = os.path.join(self.directory, "bits.json")
 
+
+class BitFileTests(BitDirectoryTest):
     def testMissingFileIsEmpty(self):
         self.assertEqual(ssb.loadBits(self.path), {})
 
@@ -255,6 +257,29 @@ class BitFileTests(unittest.TestCase):
         self.assertEqual(text, json.dumps({"schemaVersion": 1, "bits": bits}, indent=2,
                                           sort_keys=True) + "\n")
         self.assertLess(text.index('"25mm"'), text.index('"35mm-flat"'))
+
+    def testWriteKeepsTheFileReadable(self):
+        # mkstemp's temp file is 0600; the saved file must not end up owner-only.
+        umask = os.umask(0o022)
+        try:
+            ssb.saveBits(self.path, {"a": {"diameter": 20.0}})
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
+            os.chmod(self.path, 0o664)
+            ssb.saveBits(self.path, {"b": {"diameter": 30.0}})
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o664)   # an existing mode is kept
+        finally:
+            os.umask(umask)
+
+    def testShippedBits(self):
+        # profiles/bits.json as committed: the owner's four bits, diameter only,
+        # so each uses the diameter-derived feed.
+        bits = ssb.loadBits(os.path.join(HERE, "profiles", "bits.json"))
+        self.assertEqual(sorted(bits), ["25mm", "36mm", "38mm", "50mm"])
+        for name, entry in bits.items():
+            self.assertEqual(set(entry), {"diameter"}, f"{name}: only the diameter is known yet")
+            self.assertEqual(name, f"{entry['diameter']:g}mm")
+        feeds = {name: ssb.defaultFeed(entry['diameter']) for name, entry in bits.items()}
+        self.assertEqual(feeds, {"25mm": 400, "36mm": 278, "38mm": 263, "50mm": 200})
 
     def testAtomicWrite(self):
         ssb.saveBits(self.path, {"old": {"diameter": 20.0}})
@@ -292,7 +317,7 @@ class Operator:
         return reply
 
 
-class ChooseBitTests(BitFileTests):
+class ChooseBitTests(BitDirectoryTest):
     def choose(self, script, bitName=None, diameter=None, bits=None):
         bits = {} if bits is None else bits
         operator = Operator(script)
@@ -319,6 +344,14 @@ class ChooseBitTests(BitFileTests):
         self.assertEqual(name, "35mm-flat")
         self.assertIn("    1. 25mm: 25 mm", output)
         self.assertIn("    2. 35mm-flat: 35 mm (feed 250)", output)
+
+    def testMenuIsSmallestFirst(self):
+        # By diameter, not by name: "100mm" would sort before "25mm" as text.
+        (name, entry), output = self.choose([("Pick a bit (1-2)", "1")],
+                                            bits={"100mm": {"diameter": 100.0},
+                                                  "25mm": {"diameter": 25.0}})
+        self.assertEqual(name, "25mm")
+        self.assertIn("    2. 100mm: 100 mm", output)
 
     def testAddNewBitFromMenu(self):
         bits = self.saved()

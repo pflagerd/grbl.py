@@ -335,8 +335,17 @@ def saveBits(path, bits):
     """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
+    # mkstemp makes the temp file owner-only (0600); give the result the old
+    # file's mode, or the usual umask mode for a new file, so it stays readable.
+    if os.path.exists(path):
+        mode = os.stat(path).st_mode & 0o777
+    else:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
     handle, temporary = tempfile.mkstemp(prefix=".bits-", suffix=".json", dir=directory)
     try:
+        os.chmod(temporary, mode)
         with os.fdopen(handle, 'w') as jsonFile:
             json.dump({"schemaVersion": 1, "bits": bits}, jsonFile, indent=2, sort_keys=True)
             jsonFile.write('\n')
@@ -424,7 +433,7 @@ def chooseBit(bits, path, bitName, diameter, ask, out):
             name = askNewBit(ask, out, bits, path, diameter)
             return name, dict(bits[name])
         return None, {'diameter': diameter}
-    names = sorted(bits)
+    names = sorted(bits, key=lambda name: (float(bits[name]['diameter']), name))  # smallest first
     if not names:
         out(f"  No surfacing bits saved yet in {path}; add one.")
         name = askNewBit(ask, out, bits, path)
