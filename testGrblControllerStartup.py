@@ -469,6 +469,36 @@ class AfterConnectTest(unittest.TestCase):
                 self.assertEqual(controller.homingPosition, None)  # a failed corner is not recorded as homed
 
 
+class SpindleDefaultTest(unittest.TestCase):
+    """The default spindle speed is 10000 RPM everywhere a default is used."""
+
+    def setUp(self):
+        self.addCleanup(stopPatches, scriptedSerialPort())
+
+    def testMachineProfileDefaultsTo10000(self):
+        self.assertEqual(MachineProfile(name="test-machine").defaultSpindleSpeed, 10000)
+
+    def testStartSpindleMotorDefaultsTo10000(self):
+        controller = ScriptedGrblController(answerOk=True)
+        self.assertEqual(controller.startSpindleMotor(), 10000)
+        self.assertEqual(controller.written, [b"S10000\n"])
+
+    def testCutWithoutAProfileUses10000(self):
+        controller = ScriptedGrblController(answerOk=True)
+        controller.profile = None
+        with mock.patch.object(GrblController, 'sendAndWait'), \
+                mock.patch.object(GrblController, 'getMachineCoordinates'):
+            controller.cutToMachineCoordinates(1, 2, 3)
+        self.assertEqual(controller.written[0], b"S10000\n")
+
+    def testConstructorSends10000WithAndWithoutAProfile(self):
+        for profile in (None, MachineProfile(name="test-machine")):
+            with self.subTest(profile=profile):
+                controller = scripted([blank, welcome, unlockHint], alarmStatus, answerOk=True)
+                GrblController.__init__(controller, profile=profile)
+                self.assertTrue(any(written.startswith(b"S10000") for written in controller.written))
+
+
 class LineParsingTest(unittest.TestCase):
 
     def testClassifyLine(self):

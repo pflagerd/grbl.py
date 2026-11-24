@@ -125,7 +125,7 @@ class MachineProfile:
 
     # Tool type — laser mode changes spindle handling (M4 dynamic power, no spin-up)
     isLaser: bool = False
-    defaultSpindleSpeed: float = 1000.0    # RPM, or S-value power for laser
+    defaultSpindleSpeed: float = 10000.0   # RPM, or S-value power for laser
 
     # Grbl $-settings this machine must have, e.g. {"$23": "3", "$130": "300.000"}.
     # Values are strings compared against the exact text Grbl echoes from `$$`.
@@ -562,7 +562,7 @@ class GrblController(serial.Serial):
         if 'feedRate' in kwargs:
             feedRate = float(kwargs['feedRate'])
 
-        spindleSpeed = self.profile.defaultSpindleSpeed if self.profile else 1000
+        spindleSpeed = self.profile.defaultSpindleSpeed if self.profile else 10000
         if 'spindleSpeed' in kwargs:
             spindleSpeed = float(kwargs['spindleSpeed'])
 
@@ -743,7 +743,7 @@ class GrblController(serial.Serial):
 
         self.send(f'G10 P1 L2 X{newPosition.x} Y{newPosition.y} Z{newPosition.z}')
 
-    def startSpindleMotor(self, speed=1000):
+    def startSpindleMotor(self, speed=10000):
         self.spindleMotorSpeed = speed
         self.send(f'S{speed}')
         return speed
