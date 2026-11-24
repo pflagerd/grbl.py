@@ -12,6 +12,8 @@ debug = False
 
 # Firmware versions the startup handshake accepts: Grbl 1.1 with any letter (1.1f, 1.1h, ...).
 _supportedVersionPattern = re.compile(r"^1\.1[a-z]$")
+# The version on the owner's machines. Any other accepted version connects with a warning.
+_testedVersion = "1.1h"
 # report.c report_init_message(): "\r\nGrbl 1.1h ['$' for help]\r\n"
 _welcomePattern = re.compile(r"Grbl (\S+) \['\$' for help\]")
 # report.c report_realtime_status(): "<Idle|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0>", "<Hold:0|...>", "<Door:1|...>"
@@ -402,6 +404,10 @@ class GrblController(serial.Serial):
         if not _supportedVersionPattern.match(self.grblVersion):
             raise GrblVersionError(self._startupFailureText(
                 f"expected Grbl 1.1x firmware but the controller reported version {self.grblVersion!r}."))
+        if self.grblVersion != _testedVersion:
+            # Accepted, since every 1.1 release speaks the same protocol, but not the version this code was tested on.
+            warnings.warn(f"Grbl on {self.portDeviceName} reports version {self.grblVersion}; "
+                          f"this code was tested on {_testedVersion}.")
 
         for startupLine, result in self.startupLineResults:
             if result != "ok":

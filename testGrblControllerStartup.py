@@ -172,10 +172,29 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertIn("scripted-port", str(raised.exception))
         self.assertIn("Received nothing at all", str(raised.exception))
 
-    def testOtherGrbl11LetterIsAccepted(self):
+    # Version policy: 1.1h silently, any other 1.1x with a warning, anything else raises.
+
+    def testGrbl11hConnectsWithoutAWarning(self):
+        controller = scripted([blank, welcome, unlockHint], alarmStatus)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            controller._handshake()
+        self.assertEqual(controller.grblVersion, "1.1h")
+
+    def testOtherGrbl11LetterIsAcceptedWithAWarning(self):
         controller = scripted([blank, b"Grbl 1.1f ['$' for help]\r\n", unlockHint], alarmStatus)
-        controller._handshake()
+        with self.assertWarns(UserWarning) as warned:
+            controller._handshake()
         self.assertEqual(controller.grblVersion, "1.1f")
+        self.assertIn("1.1f", str(warned.warning))
+        self.assertIn(b"$X\n", controller.written)
+
+    def testOtherGrbl11LetterFromBuildInfoIsAcceptedWithAWarning(self):
+        controller = scripted([], idleStatus, {b"$I\n": [[b"[VER:1.1g.20180813:]\r\n", b"ok\r\n"]]})
+        with self.assertWarns(UserWarning) as warned:
+            controller._handshake()
+        self.assertEqual(controller.grblVersion, "1.1g")
+        self.assertIn("1.1g", str(warned.warning))
 
     def testWrongMajorVersionRaisesQuotingTheLine(self):
         controller = scripted([blank, b"Grbl 0.9j ['$' for help]\r\n"])
