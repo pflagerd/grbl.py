@@ -30,6 +30,9 @@ class ScriptedGrblController(GrblController):
     replies:  {bytes written by the host: [reply, reply, ...]} where each reply is a list of lines.
               The first write gets the first reply, the second write the second, and the last reply repeats.
     Time is faked: every read that times out advances the clock by the current read timeout.
+
+    If the greeting contains a welcome message, the controller is taken to be resetting until that line
+    has been read: a '?' written before then is lost, as it is on a real board, and gets no reply.
     """
     is_open = False  # So that serial.Serial.close(), called from __del__, does nothing.
     timeout = 30     # Plain attribute replacing serial.Serial's property, which needs an open port.
@@ -40,13 +43,18 @@ class ScriptedGrblController(GrblController):
         self.incoming = list(greeting)
         self.replies = {written: list(replyList) for written, replyList in (replies or {}).items()}
         self.written = []
+        self.writtenAt = []  # (clock, bytes) for each write
         self.clock = 0.0
+        self.resetting = any(line is not readTimeout and b"for help]" in line for line in self.incoming)
 
     def _now(self):
         return self.clock
 
     def write(self, data):
         self.written.append(data)
+        self.writtenAt.append((self.clock, data))
+        if self.resetting and data == b"?":
+            return len(data)  # lost: the controller has not finished resetting
         replyList = self.replies.get(data)
         if replyList:
             reply = replyList.pop(0) if len(replyList) > 1 else replyList[0]
@@ -57,6 +65,8 @@ class ScriptedGrblController(GrblController):
         if self.incoming:
             line = self.incoming.pop(0)
             if line is not readTimeout:
+                if b"for help]" in line:
+                    self.resetting = False
                 return line
         self.clock += self.timeout
         return b""
@@ -78,7 +88,8 @@ class StartupHandshakeTest(unittest.TestCase):
     def testNormalPowerUpUnlocks(self):
         controller = scripted([blank, welcome, unlockHint], alarmStatus)
         controller._handshake()
-        self.assertEqual(controller.written, [b"?", b"$X\n"])
+        # The first '?' is lost in the reset; the one sent when the welcome arrives is answered.
+        self.assertEqual(controller.written, [b"?", b"?", b"$X\n"])
         self.assertEqual(controller.grblVersion, "1.1h")
         self.assertEqual(controller.startupState, "Alarm")
         self.assertEqual(controller.startupMessages, ["'$H'|'$X' to unlock"])
@@ -94,7 +105,7 @@ class StartupHandshakeTest(unittest.TestCase):
     def testSoftResetWhileIdleNeedsNoUnlock(self):
         controller = scripted([blank, welcome], idleStatus)
         controller._handshake()
-        self.assertEqual(controller.written, [b"?"])
+        self.assertEqual(controller.written, [b"?", b"?"])
         self.assertEqual(controller.startupState, "Idle")
 
     def testStoredStartupLineIsRecorded(self):
@@ -118,7 +129,7 @@ class StartupHandshakeTest(unittest.TestCase):
         self.assertEqual(controller.written, [b"?", b"$I\n"])
         self.assertEqual(controller.grblVersion, "1.1h")
         self.assertEqual(controller.startupState, "Idle")
-        self.assertLess(controller.clock, 10.0)
+        self.assertLess(controller.clock, 1.0)  # the first '?' is answered: no waiting for a welcome message
 
     def testTotalSilenceFailsWithinTheDeadline(self):
         controller = scripted([])
@@ -139,7 +150,7 @@ class StartupHandshakeTest(unittest.TestCase):
             controller._handshake()
         self.assertIn("Grbl 0.9j ['$' for help]", str(raised.exception))
         self.assertLess(controller.clock, 1.0)  # raised as soon as the line is seen, without waiting
-        self.assertEqual(controller.written, [])
+        self.assertEqual(controller.written, [b"?"])  # only the first probe, lost in the reset; no $X
 
     def testStrayBytesBeforeTheGreetingAreTolerated(self):
         for greeting in ([b"\xff\x00\r\n", welcome, unlockHint],
@@ -159,13 +170,23 @@ class StartupHandshakeTest(unittest.TestCase):
 
     # --- Further cases ---
 
-    def testWelcomeArrivingLateGetsASecondStatusRequest(self):
-        # The board takes 6 s to reset. The '?' sent at 5 s is lost in the reset, so another must follow the welcome.
+    def testProbeIsRetriedEverySecondUntilTheWelcomeArrives(self):
+        # The board takes 6 s to reset. Each '?' sent before then is lost, so one is sent every second,
+        # and another as soon as the welcome message arrives.
         greeting = [readTimeout] * 12 + [blank, welcome, unlockHint]
-        controller = scripted(greeting, extraReplies={b"?": [[], [alarmStatus]]})
+        controller = scripted(greeting, alarmStatus)
         controller._handshake()
-        self.assertEqual(controller.written, [b"?", b"?", b"$X\n"])
+        probeTimes = [clock for clock, data in controller.writtenAt if data == b"?"]
+        self.assertEqual(probeTimes, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0])
+        self.assertEqual(controller.written[-1], b"$X\n")
         self.assertEqual(controller.startupState, "Alarm")
+
+    def testSilentControllerIsProbedOncePerSecondUntilTheDeadline(self):
+        controller = scripted([])
+        with self.assertRaises(GrblStartupError):
+            controller._handshake()
+        probeTimes = [clock for clock, data in controller.writtenAt if data == b"?"]
+        self.assertEqual(probeTimes, [float(second) for second in range(10)])
 
     def testNoResetAndBusyRaisesStateError(self):
         controller = scripted([], b"<Run|MPos:1.000,2.000,3.000|FS:400,1000>\r\n")
@@ -183,7 +204,7 @@ class StartupHandshakeTest(unittest.TestCase):
     def testResetOnConnectSendsCtrlXFirst(self):
         controller = scripted([blank, welcome, unlockHint], alarmStatus)
         controller._handshake(resetOnConnect=True)
-        self.assertEqual(controller.written, [b"\x18", b"?", b"$X\n"])
+        self.assertEqual(controller.written, [b"\x18", b"?", b"?", b"$X\n"])
 
     def testCtrlXIsNotSentByDefault(self):
         controller = scripted([])
@@ -196,11 +217,6 @@ class StartupHandshakeTest(unittest.TestCase):
         controller._handshake()
         self.assertEqual(controller.grblVersion, "1.1h")
         self.assertEqual(controller.startupTranscript[0], "Grbl 1.1h ['$' for help]")
-
-    def testStaleStatusReportBeforeTheWelcomeIsNotTrusted(self):
-        controller = scripted([idleStatus, blank, welcome, unlockHint], alarmStatus)
-        controller._handshake()
-        self.assertEqual(controller.startupState, "Alarm")
 
     def testReadTimeoutIsRestored(self):
         controller = scripted([blank, welcome, unlockHint], alarmStatus)

@@ -23,6 +23,8 @@ _startupLinePattern = re.compile(r"^>(.*):(ok|error:\d+)$")
 
 # How long one read may block while the handshake is running.
 _handshakeReadTimeoutSeconds = 0.5
+# How long the handshake waits for an answer to its '?' liveness probe before sending another.
+_probeRetrySeconds = 1.0
 
 
 class GrblStartupError(RuntimeError):
@@ -307,12 +309,16 @@ class GrblController(serial.Serial):
         Afterwards the results are in self.grblVersion, self.startupState, self.startupMessages,
         self.startupLineResults, self.startupAlarms and self.startupTranscript.
 
-        The first half of deadlineSeconds is spent waiting for the welcome message. If none arrives,
-        the controller was presumably not reset by opening the port, and '?' is sent anyway.
+        '?' is the liveness probe. It is sent at once, and again every _probeRetrySeconds until a
+        status report arrives or deadlineSeconds runs out. Grbl answers '?' in every state, so the
+        first status report proves the controller is alive whether or not it was reset. A '?' sent
+        while the controller is still resetting is lost, which is why it is retried, and why another
+        is sent as soon as the welcome message arrives.
 
         pyserial discards any input already waiting when it opens the port (Serial.open() calls
         _reset_input_buffer()), so a welcome message is only ever seen if the controller sends it
-        after the port is opened, that is, if opening the port resets the controller.
+        after the port is opened, that is, if opening the port resets the controller. The welcome
+        message is therefore optional: without it, the version is asked for with $I.
         """
         self.startupTranscript = []    # every non-blank line received, decoded
         self.startupMessages = []      # the text inside each [MSG:...]
@@ -324,9 +330,8 @@ class GrblController(serial.Serial):
 
         start = self._now()
         deadline = start + deadlineSeconds
-        welcomeDeadline = start + deadlineSeconds / 2.0
+        nextProbe = start  # the first '?' goes out at once
         status = None
-        statusRequested = False
 
         savedTimeout = self.timeout
         self.timeout = _handshakeReadTimeoutSeconds
@@ -338,12 +343,12 @@ class GrblController(serial.Serial):
                 self.write(b"\x18")
 
             while status is None and self._now() < deadline:
-                if not statusRequested and self._now() >= welcomeDeadline:
-                    # No welcome message. Ask for the state anyway, in case the controller is running but was not reset.
+                if self._now() >= nextProbe:
+                    # '?' is a real-time byte: no newline, and no 'ok' comes back, only a status report.
                     if debug:
                         print("sending " + str(b"?"))
                     self.write(b"?")
-                    statusRequested = True
+                    nextProbe = self._now() + _probeRetrySeconds
 
                 kind, text = self._readStartupLine()
                 if kind == 'welcome':
@@ -351,14 +356,14 @@ class GrblController(serial.Serial):
                     if not _supportedVersionPattern.match(self.grblVersion):
                         raise GrblVersionError(self._startupFailureText(
                             f"expected Grbl 1.1x firmware but the controller reported version {self.grblVersion!r}."))
-                    # Grbl sends nothing to mark the end of its startup output, so ask for a status report:
-                    # it arrives after the startup messages. '?' is a real-time byte: no newline, and no 'ok' comes back.
-                    # Sent (again) here because a '?' sent before the reset finished would have been lost.
+                    # The controller has just reset, so any '?' sent before now was lost. Probe again at once
+                    # rather than waiting for the next retry. Grbl sends nothing to mark the end of its startup
+                    # output, but the status report arrives after the startup messages ([MSG:Check Limits] too).
                     if debug:
                         print("sending " + str(b"?"))
                     self.write(b"?")
-                    statusRequested = True
-                elif kind == 'status' and statusRequested:
+                    nextProbe = self._now() + _probeRetrySeconds
+                elif kind == 'status':
                     status = parseStatusReport(text)
 
             if status is not None and self.grblVersion is None and status['state'] in ('Idle', 'Alarm'):
