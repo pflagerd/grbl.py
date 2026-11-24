@@ -2,5 +2,6 @@
 /.idea/
 /.run/
 /.claude/
+/.awb/
 __pycache__
 *.kate-swp
