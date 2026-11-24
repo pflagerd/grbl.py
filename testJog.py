@@ -745,12 +745,65 @@ class TapSessionTests(unittest.TestCase):
         self.assertEqual(grbl.state, 'Idle')  # waited for them
         self.assertAlmostEqual(grbl.position['Z'], -50.2)
 
-    def testEscLetsQueuedStepsFinishToo(self):
-        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE, autoFinishPolls=3))
+    def testEnterWaitsForQueuedStepsBeforeAnyCancel(self):
+        # The steps finish by themselves after a few polls; Enter must poll until
+        # then and never send 0x85, so the accepted position includes every tap.
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE, autoFinishPolls=5))
+        keys = jog.JogKeyState()
+        for n in range(3):
+            self.tap(keys, session, ['RIGHT'], at=n * 0.1)
+        self.assertEqual(grbl.state, 'Jog')
+        before = len(grbl.log)
+        self.assertEqual(jog.dispatchKey(keys, session, 'ENTER', True, now=0.4), jog.ACCEPTED)
+        self.assertNotIn(('write', jog.JOG_CANCEL), grbl.log)
+        self.assertGreaterEqual(grbl.log[before:].count(('status', 'Jog')), 5)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -199.7)
+        self.assertIsNone(session.stepTarget)
+
+    def testEscCancelsQueuedStepsAtOnce(self):
+        # The fake never finishes the steps by itself (no autoFinishPolls), so a
+        # wait for them would run into STEP_FINISH_TIMEOUT and raise JogError.
+        # Esc must instead send 0x85 first, then wait only for Grbl to leave Jog.
+        clock = fakeClock()
+        grbl = FakeGrbl(position=dict(MIDDLE, X=-0.25))
+        session = jog.JogSession(grbl, jog.softLimitBounds(grbl.settings), out=[].append,
+                                 sleep=lambda seconds: None, clock=clock)
+        keys = jog.JogKeyState()
+        self.tap(keys, session, ['RIGHT'], at=0.0)
+        self.tap(keys, session, ['RIGHT'], at=0.1)
+        self.assertEqual(grbl.state, 'Jog')
+        self.assertAlmostEqual(session.stepTarget['X'], -0.05)
+        before = len(grbl.log)
+        start = clock()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.2), jog.ABORTED)
+        self.assertEqual(grbl.log[before], ('write', jog.JOG_CANCEL))  # before any wait
+        self.assertEqual(grbl.written, [jog.JOG_CANCEL])
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -0.15)  # stopped part-way: steps discarded
+        self.assertLess(clock() - start, jog.CANCEL_TIMEOUT)
+        self.assertIsNone(session.stepTarget)
+        self.assertIsNone(keys.nextDeadline())
+        # Nothing carries over: the next tap plans from MPos (-0.15), not from -0.05.
+        self.tap(keys, session, ['RIGHT'], at=1.0)
+        self.assertEqual(grbl.jogs()[-1], "$J=G91 G21 X0.100 F1000")
+        self.assertAlmostEqual(grbl.target['X'], -0.05)
+
+    def testEscWithNothingQueuedSendsNothing(self):
+        grbl, session, _ = makeSession()
+        keys = jog.JogKeyState()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.0), jog.ABORTED)
+        self.assertEqual((grbl.sent, grbl.written, grbl.state), ([], [], 'Idle'))
+
+    def testEscAfterStepsHaveFinishedStillAborts(self):
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE))
         keys = jog.JogKeyState()
         self.tap(keys, session, ['LEFT'], at=0.0)
-        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.1), jog.ABORTED)
-        self.assertEqual((grbl.written, grbl.state), ([], 'Idle'))
+        grbl.finish()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.5), jog.ABORTED)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -200.1)  # the finished step is kept
+        self.assertIsNone(session.stepTarget)
 
     def testEnterDuringAHoldStillCancels(self):
         grbl, session, _ = makeSession()
@@ -837,6 +890,21 @@ class TapThroughKeyboardLoopTests(unittest.TestCase):
                           round(grbl.position['Z'], 3)), (-199.9, -149.99, -50.01))
         self.assertTrue(keyboard.grabbed and keyboard.ungrabbed)
         self.assertIn("Tap to step 0.1 mm (Alt+tap 0.01 mm)", messages[0])
+
+    def testEscAfterTapsCancelsAtOnceThroughTheLoop(self):
+        # Steps that never finish by themselves: Esc must not wait for them.
+        grbl, result, timeline, keyboard, messages = self.run_([
+            (0.0, 'KEY_RIGHT', 1), (0.05, 'KEY_RIGHT', 0),
+            (0.1, 'KEY_RIGHT', 1), (0.15, 'KEY_RIGHT', 0),
+            (0.2, 'KEY_ESC', 1)], FakeGrbl(position=MIDDLE))
+        self.assertEqual(result, jog.ABORTED)
+        self.assertEqual(len(grbl.jogs()), 2)
+        self.assertEqual(grbl.written[0], jog.JOG_CANCEL)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertLess(grbl.position['X'], -199.8 + 1e-9)  # not where both taps would end
+        self.assertLess(timeline.now, jog.CANCEL_TIMEOUT)
+        self.assertTrue(keyboard.ungrabbed)
+        self.assertIn("Esc aborts at once", messages[1])
 
     def testKeypadArrowsAreStillIgnored(self):
         grbl, result, _, _, _ = self.run_([(0.0, 'KEY_KP8', 1), (0.1, 'KEY_KP8', 0), (0.2, 'KEY_ESC', 1)])

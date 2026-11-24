@@ -9,8 +9,8 @@
     hold (past HOLD_THRESHOLD)
                           continuous jog until the key comes up
     Ctrl (held)           a tenth of the speed, for creeping onto a surface
-    Enter                 stop jogging, return "accepted"
-    Esc                   stop jogging, return "aborted"
+    Enter                 stop jogging, return "accepted" (queued tap steps finish first)
+    Esc                   stop jogging at once, return "aborted" (queued tap steps are discarded)
 
 Two arrows tapped together (both down before either is up) give one diagonal
 step.  Nothing moves during the first HOLD_THRESHOLD after an arrow goes down:
@@ -66,7 +66,7 @@ LIMIT_MARGIN = 0.01         # mm kept clear of each soft-limit bound (float roun
 MINIMUM_MOVE = 0.001        # mm; an axis with less room than this is treated as blocked
 CANCEL_TIMEOUT = 10.0       # s to wait for Grbl to leave Jog after a cancel
 POLL_INTERVAL = 0.2         # s between status polls while a jog runs
-STEP_FINISH_TIMEOUT = 60.0  # s to wait for queued tap steps to finish after Enter / Esc
+STEP_FINISH_TIMEOUT = 60.0  # s to wait for queued tap steps to finish after Enter
 
 # Tap-to-step (step 10).  Callers can override these (runKeyboardJog / JogKeyState),
 # and the JogKeyState defaults are read when it is created, so setting
@@ -480,10 +480,20 @@ class JogSession:
         return gcode
 
     def finishSteps(self):
-        # Enter / Esc: let queued tap steps finish, so the position read afterwards
+        # Enter: let queued tap steps finish, so the position read afterwards
         # is where they end.  (stop() would discard them.)
         if self.stepTarget is not None and not self.running:
             self.waitUntilStopped(STEP_FINISH_TIMEOUT)
+        self.stepTarget = None
+
+    def abortSteps(self):
+        # Esc: stop at once.  If tap steps may still be queued, send 0x85 now
+        # rather than waiting for them: in Grbl 1.1h a jog-cancel decelerates the
+        # running $J and then flushes the planner (plan_reset() in
+        # protocol_exec_rt_system), so every queued $J is discarded too.
+        # cancel() then waits, bounded by CANCEL_TIMEOUT, for Grbl to leave Jog.
+        if self.stepTarget is not None and not self.running:
+            self.cancel()
         self.stepTarget = None
 
     def execute(self, command):
@@ -525,9 +535,12 @@ def runCommands(commands, session):
     """Carry out JogKeyState commands.  Returns ACCEPTED or ABORTED when Enter/Esc
     ends jog mode, else None."""
     for command in commands:
-        if command[0] in ('accept', 'abort'):
-            session.finishSteps()
-            return ACCEPTED if command[0] == 'accept' else ABORTED
+        if command[0] == 'accept':
+            session.finishSteps()   # Enter: queued tap steps finish first
+            return ACCEPTED
+        if command[0] == 'abort':
+            session.abortSteps()    # Esc: queued tap steps are cancelled at once
+            return ABORTED
         session.execute(command)
     return None
 
@@ -606,7 +619,8 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
     out(f"Jog mode: arrows X/Y, Shift+Up/Down Z. Tap to step {keyState.tapStep:g} mm "
         f"(Alt+tap {keyState.fineTapStep:g} mm), hold to jog; hold Ctrl to creep "
         f"(1/{creepDivisor:g} speed).")
-    out("Enter accepts, Esc aborts. The keyboard is captured until then.")
+    out("Enter accepts (after any queued steps finish), Esc aborts at once. "
+        "The keyboard is captured until then.")
     waitForKeysReleased(keyboards)
     grabbed = []
     try:
