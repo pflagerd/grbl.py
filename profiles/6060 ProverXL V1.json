@@ -1,5 +1,5 @@
 {
-  "name": "6060",
+  "name": "6060 ProverXL V1",
   "portDeviceName": "/dev/ttyUSB0",
   "portBaudRate": 115200,
   "workAreaX": 622.0,
@@ -9,7 +9,7 @@
   "defaultFeedRate": 400.0,
   "rapidZClearance": 5.0,
   "isLaser": false,
-  "defaultSpindleSpeed": 1000.0,
+  "defaultSpindleSpeed": 10000.0,
   "expectedSettings": {
     "$3": "0",
     "$23": "3",
