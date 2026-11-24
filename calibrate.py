@@ -17,15 +17,31 @@ is the USABLE depth, which is what workAreaZ / $132 mean.
 
 Run with the machine powered, the work area clear, and a hand near the reset
 button.  Nothing moves without an Enter from you first.
+
+Z limit (issue #13, step 9): sets Grbl's Z soft limit ($132) so the bit cannot
+go deeper than a chosen depth into the spoilboard.  It runs as an optional last
+step of the full calibration, or on its own:
+
+    calibrate.py NAME --z-limit [--method spoilboard|workpiece|jog]
+                                [--into-depth MM] [--thickness MM]
+                                [--plate-thickness MM]
+    calibrate.py NAME --reset-z-limit
+
+$132 is stored in Grbl's EEPROM, so the limit stays in force after the job,
+for any program, until --reset-z-limit puts back the profile's calibrated
+$132.  See the "Z limit" section below for the arithmetic.
 """
 
 import argparse
 import datetime
+import json
+import math
 import os
 import select
 import sys
 import time
 
+import jog as jogModule  # calibrate.py already has a function called jog()
 from GrblController import GrblController, MachineProfile
 
 JOG_FEED = 600          # mm/min for direction-test jogs
@@ -268,15 +284,567 @@ def cornerSweep(grbl):
     return homeable
 
 
+# ---------------------------------------------------------------------------
+# Z limit ($132)
+# ---------------------------------------------------------------------------
+#
+# Grbl's soft limit fences the SPINDLE position, not the bit tip.  In stock
+# Grbl 1.1h (HOMING_FORCE_SET_ORIGIN off) every axis's allowed machine range is
+# [-$13x, 0]; Z homes to the top, at MPos z = -$27.  A target below -$132 is
+# refused: a jog with error:15, any other motion (G0/G1/G38.2) with ALARM:2,
+# which also needs a reset.
+#
+# The bit tip is a fixed distance below the spindle while one bit is fitted, so
+# "the spindle MPos z at which the tip touches a surface" is a usable stand-in
+# for the surface height.  Call that the surface z.
+#   probe: G38.2 reports [PRB:x,y,z:1], z = spindle MPos when the tip touched the
+#          TOP of the plate.  The tip reaches the surface the plate sits on after
+#          another plateThickness of travel, so surface z = z - plateThickness.
+#   jog:   surface z = spindle MPos z when Enter is pressed.
+# The lowest the spindle may go is
+#   lowest = surface z - materialThickness - intoDepth   (materialThickness = 0
+#                                                         when the surface is the
+#                                                         spoilboard)
+# and the soft limit that puts the fence exactly there is $132 = -lowest.
+# $132 is rounded DOWN to 0.001 mm (Grbl's $$ shows 3 decimals): never deeper
+# than asked for, at most 0.001 mm shallower.
+
+ZLIMIT_SUFFIX = ".zlimit.json"   # sidecar next to profiles/<name>.json
+METHOD_SPOILBOARD = "spoilboard"
+METHOD_WORKPIECE = "workpiece"
+METHOD_JOG = "jog"
+METHODS = (METHOD_SPOILBOARD, METHOD_WORKPIECE, METHOD_JOG)
+SURFACE_SPOILBOARD = "spoilboard"
+SURFACE_WORKPIECE = "workpiece"
+
+PROBE_PIN = 'P'             # the probe input's letter in the status report's Pn: field
+PROBE_SEEK_FEED = 100       # mm/min, first touch
+PROBE_FINE_FEED = 20        # mm/min, second touch, for the measurement
+PROBE_RETRACT = 2.0         # mm up after each touch
+PROBE_FINE_DISTANCE = 4.0   # mm, bound on the second touch (retract + 2 mm)
+PROBE_LIMIT_MARGIN = 0.5    # mm kept clear of the current Z soft limit
+PROBE_PIN_TIMEOUT = 15      # s for the operator to touch the plate to the bit
+
+BIT_CHANGE_WARNING = (
+    "!! This Z limit is only valid for the bit fitted now.  Grbl fences the spindle,\n"
+    "!! not the tip: a longer bit would cut deeper.  After a bit change, set the\n"
+    "!! limit again (see issue #30).")
+
+
+class ZLimitRefused(ValueError):
+    """The requested Z limit is not safe or not possible; nothing was written."""
+
+
+class ProbeFailed(RuntimeError):
+    """The probe did not give a measurement (no contact, alarm, wiring)."""
+
+
+def floorTo3(value):
+    # Round down to 0.001 mm; the 1e-6 absorbs float noise (52.5 arriving as 52.4999999).
+    return math.floor(value * 1000 + 1e-6) / 1000
+
+
+def computeZLimit(surfaceZ, intoDepth, fullTravel, materialThickness=0.0, pullOff=0.0):
+    """Return (lowest spindle z, new $132) for a surface z, or raise ZLimitRefused.
+
+    surfaceZ: spindle MPos z at which the tip touches the reference surface.
+    fullTravel: the calibrated full Z travel (profile.workAreaZ).
+    pullOff: $27; Z sits at -pullOff after homing, so the fence must be below that.
+    """
+    if intoDepth < 0:
+        raise ZLimitRefused(f"The depth into the spoilboard must be 0 or more, not {intoDepth:g}.")
+    if materialThickness < 0:
+        raise ZLimitRefused(f"The material thickness must be 0 or more, not {materialThickness:g}.")
+    lowest = surfaceZ - materialThickness - intoDepth
+    new132 = floorTo3(-lowest)
+    if new132 <= 0:
+        raise ZLimitRefused(f"That puts the lowest spindle position at z={lowest:.3f}, at or above "
+                            f"home (z=0), so $132 would be {new132:.3f}.  Check the measurements.")
+    if new132 <= pullOff:
+        raise ZLimitRefused(f"$132 would be {new132:.3f}, not below the homed position "
+                            f"(z=-{pullOff:g}, the $27 pull-off), so the machine could not move "
+                            "after homing.  Check the measurements.")
+    if new132 > fullTravel + 1e-9:
+        raise ZLimitRefused(f"$132 would be {new132:.3f}, deeper than the calibrated full Z travel "
+                            f"({fullTravel:.3f}, workAreaZ).  Check the measurements.")
+    return lowest, new132
+
+
+def zLimitPath(profilePath):
+    return os.path.splitext(profilePath)[0] + ZLIMIT_SUFFIX
+
+
+def loadZLimitRecord(path):
+    if not os.path.exists(path):
+        return {"schemaVersion": 1}
+    with open(path) as jsonFile:
+        return json.load(jsonFile)
+
+
+def saveZLimitRecord(path, record):
+    with open(path, 'w') as jsonFile:
+        json.dump(record, jsonFile, indent=2)
+        jsonFile.write('\n')
+
+
+def askNumber(ask, prompt, minimum=0.0):
+    # A number >= minimum; asks again until it gets one.
+    while True:
+        text = ask(prompt).strip()
+        try:
+            value = float(text)
+        except ValueError:
+            print(f"  '{text}' is not a number.")
+            continue
+        if math.isnan(value) or value < minimum:
+            print(f"  It must be {minimum:g} or more.")
+            continue
+        return value
+
+
+def askChoice(ask, prompt, choices):
+    # One of `choices`; accepts a unique prefix ("s" for spoilboard).
+    while True:
+        text = ask(prompt).strip().lower()
+        matches = [choice for choice in choices if text and choice.startswith(text)]
+        if len(matches) == 1:
+            return matches[0]
+        print(f"  Please answer one of: {', '.join(choices)}.")
+
+
+def getPlateThickness(record, sidecarPath, ask, out=print):
+    # Asked once, the first time a probe method is used, then saved in the sidecar.
+    if record.get("plateThickness") is not None:
+        out(f"  Probe plate thickness: {record['plateThickness']:g} mm (saved; change it with "
+            "--plate-thickness).")
+        return record["plateThickness"]
+    value = askNumber(ask, "Probe plate thickness in mm (measured once, then saved): ")
+    record["plateThickness"] = value
+    saveZLimitRecord(sidecarPath, record)
+    out(f"  Saved the plate thickness to {sidecarPath}.")
+    return value
+
+
+def probePinCheck(grbl, ask, out=print, timeoutSeconds=PROBE_PIN_TIMEOUT):
+    # Like the switch press test: no motion.  Proves the clip and plate reach
+    # Grbl's probe input before anything moves toward the plate.
+    if PROBE_PIN in grbl.getPinState():
+        raise ProbeFailed("The probe input is already triggered (P in Pn:) with nothing touching. "
+                          "Is the plate touching the bit or clip, or is the wiring shorted?")
+    ask("Probe check: clip on the bit; touch the plate to the bit and HOLD it there.  "
+        "Press Enter when ready. ")
+    if not waitForPin(grbl, PROBE_PIN, present=True, timeoutSeconds=timeoutSeconds):
+        raise ProbeFailed("No probe trigger seen (no P in Pn:).  Check the clip, the plate lead "
+                          "and the probe input wiring.")
+    out("  Probe input triggered, good.")
+    ask("Take the plate away from the bit.  Press Enter when ready. ")
+    if not waitForPin(grbl, PROBE_PIN, present=False, timeoutSeconds=timeoutSeconds):
+        raise ProbeFailed("The probe input stayed triggered after the plate was taken away.")
+
+
+def parseProbeReport(line):
+    # '[PRB:-10.000,-20.000,-55.250:1]' -> (-55.250, True)  (z, success)
+    body = line.strip()[len('[PRB:'):-1]
+    coordinates, _, flag = body.rpartition(':')
+    return float(coordinates.split(',')[2]), flag == '1'
+
+
+def sendProbe(grbl, distance, feed):
+    """One G38.2 straight down by `distance` mm.  Returns the contact z (spindle MPos).
+
+    GrblController.send() would throw the [PRB:...] line away, so this writes the
+    line and reads the answers itself.  Raises ProbeFailed on no contact or alarm.
+    """
+    # G91 on the same line: the distance is relative to where the spindle is.  On
+    # its own, 'G38.2 Z-50' in G90 would mean work-coordinate Z=-50.
+    gcode = f"G91 G21 G38.2 Z-{distance:.3f} F{feed:g}"
+    originalTimeout = grbl.timeout
+    grbl.timeout = distance / feed * 60 + 10  # Grbl says nothing until the probe ends
+    contactZ = success = alarm = None
+    try:
+        grbl.write((gcode + "\n").encode())
+        while True:
+            line = grbl.readline()
+            if line == b"":
+                if alarm is not None:
+                    break  # alarms may or may not be followed by ok
+                raise ProbeFailed(f"No answer from Grbl within {grbl.timeout:.0f}s of '{gcode}'.")
+            text = line.decode(errors='replace').strip()
+            if text.startswith('[PRB:'):
+                contactZ, success = parseProbeReport(text)
+            elif text.startswith('ALARM:'):
+                alarm = text.partition(':')[2]
+                grbl.timeout = 2
+            elif text.startswith('error:'):
+                raise ProbeFailed(f"Grbl refused '{gcode}': {text}.")
+            elif text == 'ok':
+                break
+    finally:
+        grbl.timeout = originalTimeout
+
+    if alarm is not None:
+        if alarm in ('4', '5'):
+            # Probe-fail alarms: the motion ended normally, so the position is still
+            # good; unlocking (no motion) is safe.  4 = probe already triggered at
+            # the start, 5 = no contact within the distance.
+            grbl.send("$X")
+            grbl.send("G90")
+            reason = ("the probe input was already triggered" if alarm == '4'
+                      else f"no contact within {distance:.3f} mm")
+            raise ProbeFailed(f"Probe failed (ALARM:{alarm}: {reason}).  Unlocked with $X; "
+                              "the machine position is still valid.")
+        raise ProbeFailed(f"Grbl went into ALARM:{alarm} during the probe.  Reset and re-home "
+                          "before continuing.")
+    grbl.send("G90")
+    if contactZ is None or not success:
+        raise ProbeFailed(f"The probe did not report a contact ({'no [PRB] line' if contactZ is None else '[PRB:...:0]'}).")
+    return contactZ
+
+
+def retract(grbl, contactZ, pullOff, distance=PROBE_RETRACT):
+    # Up off the plate, without asking for more room than there is below home.
+    up = floorTo3(min(distance, -contactZ - pullOff - 0.01))
+    if up > 0:
+        jog(grbl, f"Z{up:.3f} F{JOG_FEED}")
+
+
+def probeSurface(grbl, settings, plateThickness, ask, out=print, pinTimeout=PROBE_PIN_TIMEOUT):
+    """Pin check, then a two-touch G38.2 probe.  Returns (contact z, surface z)."""
+    probePinCheck(grbl, ask, out, pinTimeout)
+    ask("Put the plate on the surface, directly under the bit, and keep the clip on the bit.  "
+        "Press Enter when ready. ")
+    state = grbl.getGrblState()
+    if state != 'Idle':
+        raise ProbeFailed(f"Grbl is in state '{state}', not Idle; not probing.")
+    startZ = grbl.getMachineCoordinates().z
+    limitZ = -float(settings['$132'])
+    pullOff = float(settings.get('$27', '0'))
+    room = floorTo3(startZ - limitZ - PROBE_LIMIT_MARGIN)
+    if room < 1:
+        raise ProbeFailed(f"Only {room:.3f} mm left above the Z soft limit (z={limitZ:.3f}); "
+                          "nothing to probe.  Raise Z, or reset $132 with --reset-z-limit.")
+    out(f"  The probe goes down at most {room:.3f} mm (the current $132={settings['$132']} fences "
+        f"z={limitZ:.3f}), at {PROBE_SEEK_FEED} mm/min.  If the surface is lower, run "
+        "--reset-z-limit first.")
+    ask("About to probe DOWN.  Hand on reset.  Press Enter when ready. ")
+    try:
+        seekZ = sendProbe(grbl, room, PROBE_SEEK_FEED)
+    except ProbeFailed:
+        # No contact leaves the bit at the bottom of the probe; take it back up to
+        # where it started (a move toward home), so a retry has room.
+        if grbl.getGrblState() == 'Idle':
+            up = floorTo3(startZ - grbl.getMachineCoordinates().z)
+            if up > 0:
+                out(f"  Returning {up:.3f} mm up to the starting height.")
+                jog(grbl, f"Z{up:.3f} F{JOG_FEED}")
+        raise
+    retract(grbl, seekZ, pullOff)
+    fineDistance = floorTo3(min(PROBE_FINE_DISTANCE, grbl.getMachineCoordinates().z - limitZ
+                                - PROBE_LIMIT_MARGIN))
+    contactZ = sendProbe(grbl, fineDistance, PROBE_FINE_FEED)
+    retract(grbl, contactZ, pullOff, PROBE_BACK_OFF)
+    out(f"  Touches at z={seekZ:.3f} (seek) and z={contactZ:.3f} (fine).  Remove the plate.")
+    return contactZ, contactZ - plateThickness
+
+
+def jogToSurface(grbl, ask, out, runJog):
+    # Returns the spindle z with the tip on the surface, or None if Esc was pressed.
+    ask("Jog the bit tip down onto the surface: Shift+Down lowers Z, hold Ctrl to creep "
+        "(a sheet of paper under the tip helps).  Enter accepts, Esc aborts.  "
+        "Press Enter to start jogging. ")
+    if runJog(grbl, True, out=out) != jogModule.ACCEPTED:
+        return None
+    return grbl.getMachineCoordinates().z
+
+
+def writeZLimit(grbl, value, out=print):
+    # $132 is an EEPROM write; Grbl takes $ settings only in Idle (or Alarm).
+    state = grbl.getGrblState()
+    if state != 'Idle':
+        raise ZLimitRefused(f"Grbl is in state '{state}', not Idle; not writing $132.")
+    text = f"{value:.3f}"
+    grbl.send(f"$132={text}")  # raises on error:; but a timeout looks like ok, so read back
+    readBack = grbl.getSettings().get('$132')
+    if readBack != text:
+        raise RuntimeError(f"Wrote $132={text} but $$ reads back $132={readBack}.")
+    out(f"  $132={text} written and read back.")
+
+
+STEP_TITLES = {'method': "method", 'surface': "surface measurement",
+               'kind': "surface kind", 'thickness': "material thickness",
+               'intoDepth': "depth into the spoilboard"}
+STEP_ORDER = ('method', 'surface', 'kind', 'thickness', 'intoDepth')
+
+
+def surfaceKind(choices):
+    if choices.get('method') == METHOD_SPOILBOARD:
+        return SURFACE_SPOILBOARD
+    if choices.get('method') == METHOD_WORKPIECE:
+        return SURFACE_WORKPIECE
+    return choices.get('kind')
+
+
+def stepApplies(name, choices):
+    if name == 'kind':
+        return choices.get('method') == METHOD_JOG
+    if name == 'thickness':
+        return surfaceKind(choices) == SURFACE_WORKPIECE
+    return True
+
+
+def describeChoice(name, choices):
+    if name == 'method':
+        return choices['method']
+    if name == 'surface':
+        if 'contactZ' in choices:
+            return (f"probe touched at z={choices['contactZ']:.3f}, plate {choices['plate']:g} mm "
+                    f"-> surface z={choices['surface']:.3f}")
+        return f"jogged to the surface at z={choices['surface']:.3f}"
+    if name == 'kind':
+        return choices['kind']
+    return f"{choices[name]:g} mm"
+
+
+def forgetChoice(choices, name):
+    # Drop one answer, and whatever was measured or decided because of it.
+    dependants = {'method': ('surface', 'contactZ', 'plate', 'kind'),
+                  'surface': ('contactZ', 'plate')}
+    choices.pop(name, None)
+    for key in dependants.get(name, ()):
+        choices.pop(key, None)
+
+
+def askYesNo(ask, prompt):
+    return ask(prompt + " [y/n] ").strip().lower().startswith('y')
+
+
+def runZLimitStep(grbl, profile, profilePath, method=None, intoDepth=None, thickness=None,
+                  ask=None, out=print, runJog=None, checkEnvironment=None,
+                  pinTimeout=PROBE_PIN_TIMEOUT, today=None):
+    """Interactive Z-limit step.  Returns the $132 written, or None if nothing was written.
+
+    The machine must be homed.  Nothing is written to Grbl before the summary is
+    confirmed.  The spoilboard result also becomes the profile's calibrated $132
+    (profile.expectedSettings) and is recorded in the sidecar; a workpiece result
+    changes only Grbl's $132.
+    """
+    ask = ask or readAnswer
+    runJog = runJog or jogModule.runKeyboardJog
+    checkEnvironment = checkEnvironment or jogModule.checkJogEnvironment
+    today = today or datetime.date.today().isoformat()
+
+    out("\n=== Z limit ($132) ===")
+    jogAvailable = checkEnvironment(out=out) == jogModule.ENVIRONMENT_OK
+    methods = METHODS if jogAvailable else (METHOD_SPOILBOARD, METHOD_WORKPIECE)
+    if not jogAvailable:
+        out("  Keyboard jog is unavailable here, so only the probe methods are offered.")
+    if method == METHOD_JOG and not jogAvailable:
+        out("  --method jog was given, but keyboard jog is unavailable; choose another method.")
+        method = None
+
+    sidecarPath = zLimitPath(profilePath)
+    record = loadZLimitRecord(sidecarPath)
+    settings = grbl.getSettings()
+    old132 = settings.get('$132')
+    pullOff = float(settings.get('$27', '0'))
+    fullTravel = float(profile.workAreaZ)
+
+    given = {'method': method, 'intoDepth': intoDepth, 'thickness': thickness}
+    choices = {}
+
+    def fill(name):
+        # Ask for (or measure) one step.  Returns False if the measurement was
+        # abandoned, so the method has to be chosen again.
+        if given.get(name) is not None:
+            choices[name] = given.pop(name)
+            out(f"  {STEP_TITLES[name].capitalize()}: {describeChoice(name, choices)} (from the command line)")
+            return True
+        if name == 'method':
+            choices['method'] = askChoice(ask, f"Find the reference surface by ({' / '.join(methods)}): ",
+                                          methods)
+        elif name == 'surface':
+            if choices['method'] == METHOD_JOG:
+                surfaceZ = jogToSurface(grbl, ask, out, runJog)
+                if surfaceZ is None:
+                    out("  Jog aborted (Esc).")
+                    return False
+                choices['surface'] = surfaceZ
+            else:
+                plate = getPlateThickness(record, sidecarPath, ask, out)
+                if jogAvailable and askYesNo(ask, "Jog the bit over the plate spot (and closer "
+                                                  "to it) first?"):
+                    runJog(grbl, True, out=out)
+                try:
+                    contactZ, surfaceZ = probeSurface(grbl, settings, plate, ask, out, pinTimeout)
+                except ProbeFailed as failure:
+                    out(f"  !! {failure}")
+                    return False
+                choices.update(surface=surfaceZ, contactZ=contactZ, plate=plate)
+        elif name == 'kind':
+            choices['kind'] = askChoice(ask, "Is the surface under the bit the spoilboard or the "
+                                             "workpiece? (spoilboard / workpiece): ",
+                                        (SURFACE_SPOILBOARD, SURFACE_WORKPIECE))
+        elif name == 'thickness':
+            choices['thickness'] = askNumber(ask, "Material (workpiece) thickness in mm: ")
+        elif name == 'intoDepth':
+            choices['intoDepth'] = askNumber(ask, "Depth to cut into the spoilboard in mm (0 or more, "
+                                                  "usually 1 or more): ")
+        return True
+
+    while True:
+        # Fill the first step that applies and has no answer yet; repeat until none is missing.
+        missing = [name for name in STEP_ORDER if stepApplies(name, choices) and name not in choices]
+        if missing:
+            if not fill(missing[0]) and not askYesNo(ask, "Try the measurement again?"):
+                forgetChoice(choices, 'method')  # back to choosing the method
+            continue
+
+        steps = [name for name in STEP_ORDER if stepApplies(name, choices)]
+        kind = surfaceKind(choices)
+        materialThickness = choices['thickness'] if kind == SURFACE_WORKPIECE else 0.0
+        refusal = None
+        try:
+            lowest, new132 = computeZLimit(choices['surface'], choices['intoDepth'], fullTravel,
+                                           materialThickness, pullOff)
+        except ZLimitRefused as error:
+            refusal = error
+
+        out("\n--- Z limit summary (nothing written yet) ---")
+        for number, name in enumerate(steps, 1):
+            out(f"  {number}. {STEP_TITLES[name].capitalize()}: {describeChoice(name, choices)}")
+        if refusal:
+            out(f"  REFUSED: {refusal}")
+        else:
+            formula = "surface z" + (" - thickness" if kind == SURFACE_WORKPIECE else "") + " - into-depth"
+            out(f"  Lowest spindle z = {formula} = {lowest:.3f}")
+            out(f"  New $132 = {new132:.3f} (rounded down to 0.001 mm); old $132 = {old132}")
+            if kind == SURFACE_SPOILBOARD:
+                out("  Kept until the spoilboard is replaced: becomes the profile's calibrated $132 "
+                    "(what --reset-z-limit restores).")
+            else:
+                out("  For this job only: Grbl's $132 changes, the profile does not.")
+            out("  $132 stays in Grbl's EEPROM after the job, until --reset-z-limit.")
+
+        prompt = (("y to write it, " if not refusal else "")
+                  + f"1-{len(steps)} to change that step, b to change the most recent, q to quit: ")
+        answer = ask(prompt).strip().lower()
+        if answer == 'q':
+            out("  Nothing written.")
+            return None
+        if answer == 'y' and not refusal:
+            break
+        if answer == 'b':
+            forgetChoice(choices, steps[-1])
+        elif answer.isdigit() and 1 <= int(answer) <= len(steps):
+            forgetChoice(choices, steps[int(answer) - 1])
+
+    writeZLimit(grbl, new132, out)
+    if kind == SURFACE_SPOILBOARD:
+        spoilboard = {"surfaceZ": round(choices['surface'], 3), "intoDepth": choices['intoDepth'],
+                      "zLimit": new132, "measuredBy": "probe" if 'contactZ' in choices else "jog",
+                      "measuredOn": today}
+        if 'contactZ' in choices:
+            spoilboard["probeContactZ"] = round(choices['contactZ'], 3)
+            spoilboard["plateThickness"] = choices['plate']
+        record["spoilboard"] = spoilboard
+        saveZLimitRecord(sidecarPath, record)
+        profile.expectedSettings["$132"] = f"{new132:.3f}"
+        profile.save(profilePath)
+        out(f"  Profile {profilePath}: calibrated $132 is now {new132:.3f} "
+            f"(workAreaZ stays {fullTravel:.3f}, the full travel).  Spoilboard recorded in {sidecarPath}.")
+    out(BIT_CHANGE_WARNING)
+    return new132
+
+
+def resetZLimit(grbl, profile, out=print):
+    """Put Grbl's $132 back to the profile's calibrated value.  Returns that value."""
+    calibrated = profile.expectedSettings.get("$132")
+    if calibrated is None:
+        calibrated = f"{float(profile.workAreaZ):.3f}"
+        out(f"  The profile has no calibrated $132; using workAreaZ ({calibrated}).")
+    current = grbl.getSettings().get('$132')
+    if current == calibrated:
+        out(f"  $132 is already {calibrated}, the profile's calibrated value.")
+        return float(calibrated)
+    out(f"  Resetting $132 from {current} to the profile's calibrated {calibrated}.")
+    writeZLimit(grbl, float(calibrated), out)
+    return float(calibrated)
+
+
+def setPlateThickness(profilePath, value, out=print):
+    if value < 0:
+        sys.exit(f"--plate-thickness must be 0 or more, not {value:g}.")
+    sidecarPath = zLimitPath(profilePath)
+    record = loadZLimitRecord(sidecarPath)
+    record["plateThickness"] = value
+    saveZLimitRecord(sidecarPath, record)
+    out(f"Probe plate thickness set to {value:g} mm in {sidecarPath}.")
+
+
+def zLimitMain(arguments):
+    # --z-limit / --reset-z-limit / --plate-thickness on their own, for an
+    # already-calibrated machine.
+    path = os.path.join(arguments.profiles_dir, f"{arguments.name}.json")
+    if not os.path.exists(path):
+        sys.exit(f"No profile {path}; run the full calibration first.")
+    profile = MachineProfile.load(path)
+    if arguments.plate_thickness is not None:
+        setPlateThickness(path, arguments.plate_thickness)
+    if not (arguments.z_limit or arguments.reset_z_limit):
+        return
+
+    port = arguments.port or profile.portDeviceName
+    baud = arguments.baud or profile.portBaudRate
+    print(f"Connecting to {port} @ {baud}...")
+    # Deliberately WITHOUT profile=: GrblController's connect-time check treats
+    # $132 as critical and would refuse (or, with applySettings, overwrite) a
+    # per-job $132 that differs from the profile.
+    grbl = GrblController(port, baud)
+    if profile.homingPosition != grbl.homingPosition:
+        grbl.homingPosition = profile.homingPosition
+        grbl.send('$23=' + profile.homingPosition)  # the constructor wrote its default
+
+    if arguments.reset_z_limit:
+        print("\n=== Reset Z limit ===")
+        resetZLimit(grbl, profile)
+        return
+
+    print("\nKeep a hand near reset/power at all times.")
+    if not confirm("Has the machine been homed ($H) since it was powered on?"):
+        pause("About to home the machine.")
+        alarm = grbl.tryHomingCycle(profile.homingPosition)
+        if alarm is not None:
+            sys.exit(f"Homing failed (ALARM:{alarm}); not setting a Z limit.")
+    runZLimitStep(grbl, profile, path, method=arguments.method,
+                  intoDepth=arguments.into_depth, thickness=arguments.thickness)
+
+
 def main():
     parser = argparse.ArgumentParser(description="One-time Grbl machine capability test")
     parser.add_argument("name", help="machine name; profile saved as profiles/<name>.json")
-    parser.add_argument("--port", default="/dev/ttyUSB0")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--port", help="default /dev/ttyUSB0, or the profile's port with --z-limit")
+    parser.add_argument("--baud", type=int, help="default 115200, or the profile's rate with --z-limit")
     parser.add_argument("--axes", default="XYZ", help="axes to calibrate, e.g. XY for a laser")
     parser.add_argument("--laser", action="store_true", help="machine is a laser etcher")
     parser.add_argument("--profiles-dir", default="profiles")
+    zLimit = parser.add_argument_group("Z limit ($132)")
+    zLimit.add_argument("--z-limit", action="store_true",
+                        help="only set the Z soft limit, on an already-calibrated machine")
+    zLimit.add_argument("--reset-z-limit", action="store_true",
+                        help="put $132 back to the profile's calibrated value")
+    zLimit.add_argument("--method", choices=METHODS, help="how to find the reference surface")
+    zLimit.add_argument("--into-depth", type=float, metavar="MM", help="depth to cut into the spoilboard")
+    zLimit.add_argument("--thickness", type=float, metavar="MM", help="material thickness (workpiece)")
+    zLimit.add_argument("--plate-thickness", type=float, metavar="MM",
+                        help="set the saved probe plate thickness")
     arguments = parser.parse_args()
+    if arguments.z_limit and arguments.reset_z_limit:
+        parser.error("--z-limit and --reset-z-limit are separate runs; give one of them.")
+    if arguments.z_limit or arguments.reset_z_limit or arguments.plate_thickness is not None:
+        zLimitMain(arguments)
+        return
+    arguments.port = arguments.port or "/dev/ttyUSB0"
+    arguments.baud = arguments.baud or 115200
     axes = [a for a in arguments.axes.upper() if a in "XYZ"]
 
     print(f"Connecting to {arguments.port} @ {arguments.baud}...")
@@ -343,6 +911,14 @@ def main():
     profile.save(path)
     print(f"\nProfile written to {path}.")
     print("Load it with: GrblController(profile=MachineProfile.load(" + repr(path) + "))")
+
+    # Optional last step.  The corner sweep ends with a bottom-left home, so
+    # machine coordinates are good if that home worked.
+    homedNow = homeable.get(GrblController.HomingPositions.bottomLeftZUp)
+    if 'Z' in axes and not arguments.laser and homedNow and confirm(
+            "\nSet a Z soft limit for cutting now (spoilboard / workpiece / jog)?"):
+        runZLimitStep(grbl, profile, path, method=arguments.method,
+                      intoDepth=arguments.into_depth, thickness=arguments.thickness)
 
 
 if __name__ == "__main__":
