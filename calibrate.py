@@ -2,12 +2,18 @@
 """One-time per-machine capability test for grbl.py.
 
 Attended calibration: verifies limit-switch wiring (press test), verifies axis
-directions (test jogs + operator confirmation), measures physical travel per axis
-(creep probe toward the far switch), and probes which homing corners work.
+directions (test jogs + operator confirmation), measures usable travel per axis
+(creep probe toward the far end, which the operator can stop with Enter), and
+probes which homing corners work.
 Writes the result as a MachineProfile JSON into profiles/<name>.json.
 
 The machines this targets have TWO limit switches per axis (one at each end),
-which is what makes the corner sweep and the creep probe safe.
+which is what makes the corner sweep and the X/Y creep probes safe.  The Z
+probe is different: on most machines the baseboard, spoiler board or a clamped
+workpiece sits above the bottom Z switch, so the tool would crash long before
+that switch triggers.  The Z probe is therefore operator-terminated: you watch
+the tool tip and press Enter when it nears the obstruction.  What gets measured
+is the USABLE depth, which is what workAreaZ / $132 mean.
 
 Run with the machine powered, the work area clear, and a hand near the reset
 button.  Nothing moves without an Enter from you first.
@@ -16,6 +22,7 @@ button.  Nothing moves without an Enter from you first.
 import argparse
 import datetime
 import os
+import select
 import sys
 import time
 
@@ -25,6 +32,12 @@ JOG_FEED = 600          # mm/min for direction-test jogs
 PROBE_FEED = 300        # mm/min for the creep probe (slow: we intend to touch a switch)
 PROBE_STEP = 1.0        # mm per creep step
 PROBE_MAX_TRAVEL = 1500  # mm; give up if no switch found by then (miswired/dead)
+PROBE_BACK_OFF = 5      # mm to retreat after a probe stops, so no switch stays triggered
+
+# Why a creep probe stopped.  Only the first two are measurements.
+STOPPED_BY_OPERATOR = "operator"
+STOPPED_BY_SWITCH = "switch"
+STOPPED_BY_MAX_TRAVEL = "maxTravel"
 DIRECTION_BITS = {'X': 1, 'Y': 2, 'Z': 4}
 
 CORNERS = {
@@ -35,12 +48,31 @@ CORNERS = {
 }
 
 
-def confirm(prompt):
-    return input(prompt + " [y/n] ").strip().lower().startswith('y')
+def readAnswer(prompt, inputStream=None):
+    # input() replacement that can never be answered by type-ahead.  Anything
+    # typed before the prompt appears (an extra Enter, a key pressed while the
+    # machine was moving) is thrown away first, then one fresh line is read.
+    # It reads the file descriptor directly (os.read), bypassing sys.stdin's
+    # buffer, so no earlier line can be sitting hidden in Python's buffer.
+    if inputStream is None:
+        inputStream = sys.stdin
+    discardPendingInput(inputStream)
+    print(prompt, end="", flush=True)
+    received = b""
+    while b"\n" not in received:
+        chunk = os.read(inputStream.fileno(), 4096)
+        if chunk == b"":
+            raise EOFError("operator input closed")
+        received += chunk
+    return received.split(b"\n", 1)[0].decode(errors="replace")
 
 
-def pause(prompt):
-    input(prompt + "  Press Enter when ready. ")
+def confirm(prompt, inputStream=None):
+    return readAnswer(prompt + " [y/n] ", inputStream).strip().lower().startswith('y')
+
+
+def pause(prompt, inputStream=None):
+    readAnswer(prompt + "  Press Enter when ready. ", inputStream)
 
 
 def waitForPin(grbl, axisLetter, present, timeoutSeconds=30):
@@ -127,34 +159,102 @@ def directionTest(grbl, axes):
     return grbl.getSettings().get('$3', '0')
 
 
-def measureTravel(grbl, axes):
-    # Creep probe: from a fresh bottom-left home, step toward the far switch while
-    # watching Pn.  Requires hard limits off (a touch must not alarm) and the far
-    # switch to exist — which the press test just proved.
+def operatorPressedEnter(inputStream):
+    # Non-blocking: True if input (an Enter press) is waiting on inputStream.
+    # Whatever is waiting is consumed so it can't also answer the next prompt.
+    # It is read with os.read on the file descriptor, not readline(): Python's
+    # buffered readline() can pull a second line into its own buffer, where
+    # select() can no longer see it, and the next Enter would be missed.
+    # End-of-file (stdin closed) also counts as a stop: if we can no longer
+    # hear the operator, we must not keep moving.
+    readable, _, _ = select.select([inputStream], [], [], 0)
+    if not readable:
+        return False
+    os.read(inputStream.fileno(), 4096)
+    return True
+
+
+def discardPendingInput(inputStream):
+    # An extra Enter typed at an earlier prompt would otherwise stop the probe
+    # at 0mm.  Throw away anything already waiting before the probe starts.
+    while select.select([inputStream], [], [], 0)[0]:
+        if os.read(inputStream.fileno(), 4096) == b"":
+            break  # EOF: nothing more will ever arrive
+
+
+def creepProbe(grbl, axis, sign, inputStream=None):
+    # Step `axis` by PROBE_STEP in direction `sign` until one of three things
+    # happens, checked before every step:
+    #   - the axis limit pin shows in Pn:          -> STOPPED_BY_SWITCH
+    #   - the operator pressed Enter                -> STOPPED_BY_OPERATOR
+    #   - PROBE_MAX_TRAVEL covered with neither     -> STOPPED_BY_MAX_TRAVEL
+    # Returns (distance travelled in mm, terminator).  Leaves the machine where
+    # it stopped; the caller does the back-off.
+    if inputStream is None:
+        inputStream = sys.stdin
+    start = axisCoordinate(grbl, axis)
+    steps = 0
+    while True:
+        if axis in grbl.getPinState():
+            terminator = STOPPED_BY_SWITCH
+            break
+        if operatorPressedEnter(inputStream):
+            terminator = STOPPED_BY_OPERATOR
+            break
+        if PROBE_STEP * steps >= PROBE_MAX_TRAVEL:
+            terminator = STOPPED_BY_MAX_TRAVEL
+            break
+        jog(grbl, f"{axis}{sign * PROBE_STEP} F{PROBE_FEED}")
+        steps += 1
+    return abs(axisCoordinate(grbl, axis) - start), terminator
+
+
+def describeStop(axis, measured, terminator):
+    if terminator == STOPPED_BY_OPERATOR:
+        where = "usable depth — obstruction below" if axis == 'Z' else "usable travel — obstruction in the path"
+        return f"{axis}: stopped by operator at {measured:.3f}mm ({where})"
+    return f"{axis}: stopped by {axis} limit switch at {measured:.3f}mm"
+
+
+def measureTravel(grbl, axes, inputStream=None):
+    # Creep probe: from a fresh bottom-left home, step toward the far end of each
+    # axis.  Requires hard limits off (a switch touch must not alarm).
+    #   X, Y: stop automatically on the far switch (the press test proved it
+    #         exists); Enter is an emergency stop, e.g. for a clamp in the path.
+    #   Z:    the bottom switch is usually BELOW the baseboard / spoiler board /
+    #         workpiece, so the operator must stop it with Enter.  The switch
+    #         still stops it if it happens to trigger first.
+    # Returns ({axis: mm}, {axis: terminator}).
+    if inputStream is None:
+        inputStream = sys.stdin
     print("\n=== Travel measurement (creep probe) ===")
     travel = {}
-    probeWords = {'X': 'X', 'Y': 'Y', 'Z': 'Z'}
-    probeSigns = {'X': +1, 'Y': +1, 'Z': -1}  # homed bottom-left Z-up: far switch is +X, +Y, -Z
+    stoppedBy = {}
+    probeSigns = {'X': +1, 'Y': +1, 'Z': -1}  # homed bottom-left Z-up: far end is +X, +Y, -Z
     for axis in axes:
-        pause(f"About to creep {axis} toward its far switch at {PROBE_FEED}mm/min.")
+        if axis == 'Z':
+            print(f"\n  !! WARNING: the Z probe creeps the tool DOWNWARD in {PROBE_STEP:g}mm steps"
+                  f" at {PROBE_FEED}mm/min.")
+            print("  !! It will NOT stop by itself before the baseboard, spoiler board or workpiece.")
+            print("  !! WATCH THE TOOL TIP and press Enter the moment it approaches whatever is below it.")
+            print("  !! (It also stops on its own if the bottom Z switch triggers first.)")
+            pause("Z probe: hand on the keyboard, eyes on the tool tip.", inputStream)
+        else:
+            pause(f"About to creep {axis} toward its far switch at {PROBE_FEED}mm/min"
+                  " (press Enter at any time to stop it).", inputStream)
         alarm = grbl.tryHomingCycle(GrblController.HomingPositions.bottomLeftZUp)
         if alarm is not None:
             sys.exit(f"Re-homing before {axis} probe failed (ALARM:{alarm}).")
-        start = axisCoordinate(grbl, axis)
-        steps = 0
-        while PROBE_STEP * steps < PROBE_MAX_TRAVEL:
-            if axis in grbl.getPinState():
-                break
-            jog(grbl, f"{probeWords[axis]}{probeSigns[axis] * PROBE_STEP} F{PROBE_FEED}")
-            steps += 1
-        else:
-            sys.exit(f"No {axis} switch found within {PROBE_MAX_TRAVEL}mm — aborting.")
-        measured = abs(axisCoordinate(grbl, axis) - start)
+        discardPendingInput(inputStream)
+        measured, terminator = creepProbe(grbl, axis, probeSigns[axis], inputStream)
+        if terminator == STOPPED_BY_MAX_TRAVEL:
+            sys.exit(f"No {axis} switch and no operator stop within {PROBE_MAX_TRAVEL}mm — aborting.")
         travel[axis] = measured
-        print(f"  {axis}: {measured:.3f}mm switch-to-switch (minus pull-off).")
-        # Back away so the switch isn't left triggered
-        jog(grbl, f"{probeWords[axis]}{-probeSigns[axis] * 5} F{JOG_FEED}")
-    return travel
+        stoppedBy[axis] = terminator
+        print("  " + describeStop(axis, measured, terminator))
+        # Back away so no switch stays triggered and the tool clears any obstruction
+        jog(grbl, f"{axis}{-probeSigns[axis] * PROBE_BACK_OFF} F{JOG_FEED}")
+    return travel, stoppedBy
 
 
 def cornerSweep(grbl):
@@ -198,7 +298,7 @@ def main():
             sys.exit("Aborted. Fix the switch wiring and rerun.")
 
     directionMask = directionTest(grbl, axes)
-    travel = measureTravel(grbl, axes)
+    travel, stoppedBy = measureTravel(grbl, axes)
     homeable = cornerSweep(grbl)
 
     # Leave the machine configured the way the profile promises: bottom-left
@@ -231,6 +331,12 @@ def main():
         homeableCorners=homeable,
         switchesVerified=switchesVerified,
     )
+
+    # The profile has no field yet for HOW each travel was measured, so say it
+    # here, before saving.  workAreaZ / $132 hold the usable value either way.
+    print("\n=== Measured travel (saved as workArea* and $130-$132) ===")
+    for axis in axes:
+        print("  " + describeStop(axis, travel[axis], stoppedBy[axis]))
 
     os.makedirs(arguments.profiles_dir, exist_ok=True)
     path = os.path.join(arguments.profiles_dir, f"{arguments.name}.json")
