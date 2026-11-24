@@ -48,12 +48,31 @@ CORNERS = {
 }
 
 
-def confirm(prompt):
-    return input(prompt + " [y/n] ").strip().lower().startswith('y')
+def readAnswer(prompt, inputStream=None):
+    # input() replacement that can never be answered by type-ahead.  Anything
+    # typed before the prompt appears (an extra Enter, a key pressed while the
+    # machine was moving) is thrown away first, then one fresh line is read.
+    # It reads the file descriptor directly (os.read), bypassing sys.stdin's
+    # buffer, so no earlier line can be sitting hidden in Python's buffer.
+    if inputStream is None:
+        inputStream = sys.stdin
+    discardPendingInput(inputStream)
+    print(prompt, end="", flush=True)
+    received = b""
+    while b"\n" not in received:
+        chunk = os.read(inputStream.fileno(), 4096)
+        if chunk == b"":
+            raise EOFError("operator input closed")
+        received += chunk
+    return received.split(b"\n", 1)[0].decode(errors="replace")
 
 
-def pause(prompt):
-    input(prompt + "  Press Enter when ready. ")
+def confirm(prompt, inputStream=None):
+    return readAnswer(prompt + " [y/n] ", inputStream).strip().lower().startswith('y')
+
+
+def pause(prompt, inputStream=None):
+    readAnswer(prompt + "  Press Enter when ready. ", inputStream)
 
 
 def waitForPin(grbl, axisLetter, present, timeoutSeconds=30):
@@ -194,7 +213,7 @@ def describeStop(axis, measured, terminator):
     if terminator == STOPPED_BY_OPERATOR:
         where = "usable depth — obstruction below" if axis == 'Z' else "usable travel — obstruction in the path"
         return f"{axis}: stopped by operator at {measured:.3f}mm ({where})"
-    return f"{axis}: stopped by {axis} limit switch at {measured:.3f}mm (full travel, minus pull-off)"
+    return f"{axis}: stopped by {axis} limit switch at {measured:.3f}mm"
 
 
 def measureTravel(grbl, axes, inputStream=None):
@@ -219,10 +238,10 @@ def measureTravel(grbl, axes, inputStream=None):
             print("  !! It will NOT stop by itself before the baseboard, spoiler board or workpiece.")
             print("  !! WATCH THE TOOL TIP and press Enter the moment it approaches whatever is below it.")
             print("  !! (It also stops on its own if the bottom Z switch triggers first.)")
-            pause("Z probe: hand on the keyboard, eyes on the tool tip.")
+            pause("Z probe: hand on the keyboard, eyes on the tool tip.", inputStream)
         else:
             pause(f"About to creep {axis} toward its far switch at {PROBE_FEED}mm/min"
-                  " (press Enter at any time to stop it).")
+                  " (press Enter at any time to stop it).", inputStream)
         alarm = grbl.tryHomingCycle(GrblController.HomingPositions.bottomLeftZUp)
         if alarm is not None:
             sys.exit(f"Re-homing before {axis} probe failed (ALARM:{alarm}).")

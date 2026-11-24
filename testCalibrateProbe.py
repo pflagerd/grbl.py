@@ -10,6 +10,8 @@ Run: python testCalibrateProbe.py
 
 import os
 import re
+import threading
+import time
 import types
 import unittest
 
@@ -62,7 +64,7 @@ class CreepProbeTests(unittest.TestCase):
         readFd, self.writeFd = os.pipe()
         self.keyboard = os.fdopen(readFd, 'r')
         self.originalPause = calibrate.pause
-        calibrate.pause = lambda prompt: None
+        calibrate.pause = lambda prompt, inputStream=None: None
 
     def tearDown(self):
         calibrate.pause = self.originalPause
@@ -137,8 +139,52 @@ class CreepProbeTests(unittest.TestCase):
     def testDescribeStop(self):
         self.assertIn("stopped by operator at 7.000mm (usable depth — obstruction below)",
                       calibrate.describeStop('Z', 7.0, calibrate.STOPPED_BY_OPERATOR))
-        self.assertIn("stopped by Z limit switch at 12.000mm (full travel",
-                      calibrate.describeStop('Z', 12.0, calibrate.STOPPED_BY_SWITCH))
+        self.assertEqual("Z: stopped by Z limit switch at 12.000mm",
+                         calibrate.describeStop('Z', 12.0, calibrate.STOPPED_BY_SWITCH))
+        self.assertEqual("X: stopped by X limit switch at 600.000mm",
+                         calibrate.describeStop('X', 600.0, calibrate.STOPPED_BY_SWITCH))
+
+
+class PromptTypeAheadTests(unittest.TestCase):
+    # pause()/confirm() must never be answered by something typed BEFORE the
+    # prompt appeared.  The real answer arrives from a thread after a delay,
+    # the way an operator answers after reading the prompt.
+    ANSWER_DELAY = 0.2
+
+    def setUp(self):
+        readFd, self.writeFd = os.pipe()
+        self.keyboard = os.fdopen(readFd, 'r')
+
+    def tearDown(self):
+        self.keyboard.close()
+        os.close(self.writeFd)
+
+    def answerLater(self, text):
+        timer = threading.Timer(self.ANSWER_DELAY, os.write, (self.writeFd, text))
+        timer.start()
+        self.addCleanup(timer.join)
+
+    def testConfirmIgnoresTypeAhead(self):
+        os.write(self.writeFd, b"y\n")  # typed ahead while the machine was moving
+        self.answerLater(b"n\n")         # the operator's real answer
+        self.assertFalse(calibrate.confirm("Did the tool move RIGHT?", self.keyboard))
+
+    def testPauseWaitsForAFreshEnter(self):
+        os.write(self.writeFd, b"\n\n")  # extra Enters from an earlier prompt
+        self.answerLater(b"\n")
+        started = time.monotonic()
+        calibrate.pause("About to jog.", self.keyboard)
+        self.assertGreaterEqual(time.monotonic() - started, self.ANSWER_DELAY * 0.9)
+
+    def testConfirmReadsAnswer(self):
+        self.answerLater(b"Yes\n")
+        self.assertTrue(calibrate.confirm("Continue?", self.keyboard))
+
+    def testClosedInputRaisesEOFError(self):
+        os.close(self.writeFd)
+        self.writeFd = os.open(os.devnull, os.O_WRONLY)  # so tearDown has something to close
+        with self.assertRaises(EOFError):
+            calibrate.pause("About to jog.", self.keyboard)
 
 
 if __name__ == "__main__":
