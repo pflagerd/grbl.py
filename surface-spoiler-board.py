@@ -231,9 +231,9 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     actualStepover = span / intervals
     lineYs = [round(y0 + i * actualStepover, 3) for i in range(intervals)] + [round(y1, 3)]
 
+    # The Z floor (-$132) is checkZRoom()'s job, before each pass, because it
+    # comes with an offer to reset $132; refusing here would hide that offer.
     cutZ = round(touchZ - totalDepth, 3)
-    if cutZ < zLow - 1e-9:
-        raise PlanRefused(f"The cut bottom z={cutZ:.3f} is below the Z soft limit z={zLow - margin:.3f}.")
     clearZ = round(touchZ + clearance, 3)
     if clearZ > zHigh:
         notes.append(f"The clearance is shrunk from {clearance:g} to {zHigh - touchZ:.3f} mm: the top "
@@ -698,7 +698,8 @@ class Surfacing:
                             else " (alternate +X / -X)")
         reason = self.defaultReason(name, source)
         if name == 'feed':
-            return f"{value:g} mm/min ({reason}; override with --feed)"
+            hint = "" if source == 'command line' else "; override with --feed"
+            return f"{value:g} mm/min ({reason}{hint})"
         if name == 'plunge':
             return f"{value:g} mm/min ({reason})"
         if name == 'spindle':
@@ -729,9 +730,10 @@ class Surfacing:
         else:
             value, source = self.derived(name)
             if source != 'command line':
-                unit = {'feed': "mm/min", 'plunge': "mm/min", 'spindle': "(S word)"}.get(name, "mm")
-                label = STEP_TITLES[name].replace(" this pass", " per pass").capitalize()
-                typed = askPositive(self.ask, f"{label} in {unit} [{value:g}, "
+                label = {'depth': "Depth per pass in mm", 'feed': "Feed in mm/min",
+                         'plunge': "Plunge feed in mm/min", 'spindle': "Spindle speed (S word)",
+                         'stepover': "Stepover in mm", 'clearance': "Clearance in mm"}[name]
+                typed = askPositive(self.ask, f"{label} [{value:g}, "
                                               f"{self.defaultReason(name, source)}]: ", default=value)
                 if typed != value:
                     value, source = typed, 'typed'
@@ -987,6 +989,7 @@ class Surfacing:
                      "like.  After homing, move only by jog: a knob turn would make Grbl's position, "
                      "and the soft limits, wrong.")
             self.ask("Keep a hand near the reset button.  Press Enter to home the machine. ")
+            self.homingStarted = True   # from here on the machine may move
             alarm = home()
             if alarm is not None:
                 raise MachineError(f"Homing failed (ALARM:{alarm}).")
@@ -1012,6 +1015,8 @@ def runWithSafeStop(surfacing, home):
     try:
         return surfacing.run(home)
     except BaseException as error:
+        if not getattr(surfacing, 'homingStarted', False):
+            raise   # stopped before anything could move; nothing to stop
         surfacing.out(f"\n!! {type(error).__name__}: {error}" if str(error)
                       else f"\n!! {type(error).__name__}")
         safeStop(surfacing.grbl, surfacing.out, surfacing.sleep, surfacing.clock)
