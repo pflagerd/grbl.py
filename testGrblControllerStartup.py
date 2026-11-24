@@ -403,7 +403,7 @@ class AfterConnectTest(unittest.TestCase):
         self.assertEqual(controller.tryHomingCycle("3"), "9")
         self.assertIn(b"$X\n", controller.written)
 
-    def testTryHomingCycleRefusesToUnlockOnAnEngagedSwitch(self):
+    def testTryHomingCycleReturnsTheAlarmWithoutUnlockingOnAnEngagedSwitch(self):
         for afterReset, status in (([blank, welcome, checkLimits, unlockHint], alarmStatus),
                                    ([blank, welcome, unlockHint], b"<Alarm|MPos:0.000,0.000,0.000|Pn:Y>\r\n")):
             with self.subTest(status=status):
@@ -411,9 +411,10 @@ class AfterConnectTest(unittest.TestCase):
                     b"$H\n": [[b"ALARM:9\r\n"]],
                     b"\x18": [afterReset],
                     b"?\n": [[status, b"ok\r\n"]]}, answerOk=True)
-                with self.assertRaises(GrblLimitSwitchError):
-                    controller.tryHomingCycle("3")
-                self.assertNotIn(b"$X\n", controller.written)
+                controller.homingPosition = None
+                self.assertEqual(controller.tryHomingCycle("3"), "9")  # returned, not raised
+                self.assertNotIn(b"$X\n", controller.written)  # left locked: never unlocked on a switch
+                self.assertEqual(controller.homingPosition, None)  # a failed corner is not recorded as homed
 
 
 class LineParsingTest(unittest.TestCase):

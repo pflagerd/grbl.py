@@ -646,13 +646,11 @@ class GrblController(serial.Serial):
                     alarmCode = line.decode('utf-8', errors='replace').strip().partition(':')[2]
                     afterReset = self.softReset()
                     # As in the startup handshake: never unlock a machine that is sitting on a limit switch.
+                    # The failure is still returned, not raised (the owner's ruling), so a calibration sweep
+                    # records it and goes on; the machine is left locked in Alarm, and $23=/$H still work there.
                     engaged = limitPins(self.getPinState())
                     if engaged or any(b"Check Limits" in resetLine for resetLine in afterReset):
-                        raise GrblLimitSwitchError(
-                            f"Homing toward $23={homingPosition} on {self.portDeviceName} failed with ALARM:{alarmCode}, "
-                            f"and a limit switch is engaged" + (f" (limit pin {engaged} active)" if engaged else
-                                                                " ([MSG:Check Limits])")
-                            + ". Not unlocked with $X. Move the machine off the switch, then try again.")
+                        return alarmCode
                     self.send("$X")  # reset after a homing alarm leaves Grbl locked
                     return alarmCode
                 if line == b"":
