@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Hold-to-jog from the keyboard (issue #13, step 8).
+"""Hold-to-jog and tap-to-step from the keyboard (issue #13, steps 8 and 10).
 
     Left / Right          X- / X+
     Up / Down             Y+ / Y-
     Shift+Up / Shift+Down Z+ / Z-
+    tap (release within HOLD_THRESHOLD, 250 ms)
+                          one step: 0.1 mm, or 0.01 mm with Alt (Left or Right Alt / AltGr)
+    hold (past HOLD_THRESHOLD)
+                          continuous jog until the key comes up
     Ctrl (held)           a tenth of the speed, for creeping onto a surface
     Enter                 stop jogging, return "accepted"
     Esc                   stop jogging, return "aborted"
 
-Motion starts when a key goes down and stops when it comes up.  A terminal
-cannot report key releases, so key events come from the Linux input layer
-(/dev/input/event*) through the `evdev` library.  While jogging, the keyboard
+Two arrows tapped together (both down before either is up) give one diagonal
+step.  Nothing moves during the first HOLD_THRESHOLD after an arrow goes down:
+only when the key comes up (a tap: one step) or the threshold passes with it
+still held (a hold: the continuous jog) is anything sent.
+
+A continuous jog stops when its key comes up, and a tap is only known when the
+key comes up, so key releases matter.  A terminal cannot report them, so key
+events come from the Linux input layer (/dev/input/event*) through the `evdev`
+library.  While jogging, the keyboard
 is grabbed: keystrokes go only to this program, whichever window has focus.
 
 How a continuous jog works with Grbl 1.1h: one `$J=G91 ...` is sent whose
@@ -21,8 +31,9 @@ acceleration and deceleration itself ($120-$122).
 
 The parts are kept separate so the logic can be tested without evdev or a
 machine:
-    JogKeyState         pure: key events in, jog/cancel commands out
-    planJog()           pure: direction + position + bounds -> one $J line
+    JogKeyState         pure: key events (and the time) in, step/jog/cancel commands out
+    planJog()           pure: direction + position + bounds -> one $J line to the edge
+    planStep()          pure: direction + step size + position + bounds -> one short $J line
     softLimitBounds()   pure: $130-$132, $23, $27 -> machine-coordinate box
     JogSession          drives a GrblController (send/write/getStatus)
     runKeyboardJog()    the thin evdev part: find, grab, read, ungrab
@@ -55,6 +66,14 @@ LIMIT_MARGIN = 0.01         # mm kept clear of each soft-limit bound (float roun
 MINIMUM_MOVE = 0.001        # mm; an axis with less room than this is treated as blocked
 CANCEL_TIMEOUT = 10.0       # s to wait for Grbl to leave Jog after a cancel
 POLL_INTERVAL = 0.2         # s between status polls while a jog runs
+STEP_FINISH_TIMEOUT = 60.0  # s to wait for queued tap steps to finish after Enter / Esc
+
+# Tap-to-step (step 10).  Callers can override these (runKeyboardJog / JogKeyState),
+# and the JogKeyState defaults are read when it is created, so setting
+# jog.HOLD_THRESHOLD before then works too.
+HOLD_THRESHOLD = 0.25       # s; an arrow released sooner is a tap, held longer a continuous jog
+TAP_STEP = 0.1              # mm per plain tap or Ctrl+tap
+FINE_TAP_STEP = 0.01        # mm per Alt+tap
 
 AXES = ('X', 'Y', 'Z')
 TRAVEL_SETTINGS = {'X': '$130', 'Y': '$131', 'Z': '$132'}
@@ -75,6 +94,9 @@ EVDEV_KEY_NAMES = {
     'KEY_LEFT': 'LEFT', 'KEY_RIGHT': 'RIGHT', 'KEY_UP': 'UP', 'KEY_DOWN': 'DOWN',
     'KEY_LEFTSHIFT': 'LEFTSHIFT', 'KEY_RIGHTSHIFT': 'RIGHTSHIFT',
     'KEY_LEFTCTRL': 'LEFTCTRL', 'KEY_RIGHTCTRL': 'RIGHTCTRL',
+    # AltGr is KEY_RIGHTALT at the evdev level (the layout maps it to ISO_Level3_Shift
+    # later, in the desktop), so AltGr counts as Alt here.
+    'KEY_LEFTALT': 'LEFTALT', 'KEY_RIGHTALT': 'RIGHTALT',
     'KEY_ENTER': 'ENTER', 'KEY_KPENTER': 'ENTER', 'KEY_ESC': 'ESC',
 }
 ARROW_KEYS = ('KEY_UP', 'KEY_DOWN', 'KEY_LEFT', 'KEY_RIGHT')
@@ -92,30 +114,55 @@ class JogError(RuntimeError):
 # Pure logic: key state -> commands
 # ---------------------------------------------------------------------------
 
-class JogKeyState:
-    """Turns key presses/releases into commands.  Knows nothing about Grbl.
+ARROW_NAMES = ('LEFT', 'RIGHT', 'UP', 'DOWN')
+SHIFT_NAMES = ('LEFTSHIFT', 'RIGHTSHIFT')
+CTRL_NAMES = ('LEFTCTRL', 'RIGHTCTRL')
+ALT_NAMES = ('LEFTALT', 'RIGHTALT')
 
-    handleKey() returns a list of commands, each a tuple:
-        ('cancel',)                     stop the running jog
-        ('jog', (dx, dy, dz), feed)     start a jog; each d is -1, 0 or +1
-        ('accept',) / ('abort',)        Enter / Esc: end jog mode
-    A changed key set always gives a cancel (if a jog is running) before the
-    new jog, so Grbl never has two jogs queued.
+
+class JogKeyState:
+    """Turns key presses/releases, and the passing of time, into commands.
+
+    Knows nothing about Grbl.  handleKey() and tick() return a list of
+    commands, each a tuple:
+        ('cancel',)                         stop the running continuous jog
+        ('jog', (dx, dy, dz), feed)         start a continuous jog; each d is -1, 0 or +1
+        ('step', (dx, dy, dz), size, feed)  move each d axis by size mm, once
+        ('accept',) / ('abort',)            Enter / Esc: end jog mode
+
+    An arrow going down from rest starts a "gesture" and nothing is sent yet.
+    If every arrow is up again within holdThreshold seconds, the gesture was a
+    tap and gives one step (two arrows down together: one diagonal step).  If
+    an arrow is still down when holdThreshold has passed, tick() starts the
+    continuous jog, and from then on it works exactly as before step 10: a
+    changed key set always gives a cancel before the new jog, so Grbl never
+    has two continuous jogs queued.  Steps never give a cancel, so taps queue
+    one after another in Grbl's planner.
+
+    holdThreshold=0 turns tap-to-step off: every press is a hold at once.
+    clock gives the time when handleKey()/tick() are not told it.
     """
 
-    def __init__(self, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP_DIVISOR):
+    def __init__(self, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP_DIVISOR,
+                 holdThreshold=None, tapStep=None, fineTapStep=None, clock=time.monotonic):
         self.xyFeed = xyFeed
         self.zFeed = zFeed
         self.creepDivisor = creepDivisor
+        self.holdThreshold = HOLD_THRESHOLD if holdThreshold is None else holdThreshold
+        self.tapStep = TAP_STEP if tapStep is None else tapStep
+        self.fineTapStep = FINE_TAP_STEP if fineTapStep is None else fineTapStep
+        self.clock = clock
         self.held = set()
-        self.active = None  # the (direction, feed) last commanded, or None when stopped
+        self.active = None  # the (direction, feed) of the continuous jog last commanded, or None
+        self.gestureStart = None  # when the first arrow of an undecided tap/hold went down
+        self.gestureKeys = set()  # every key that was down at some point during that gesture
 
-    def desired(self):
-        # What the held keys ask for right now: (direction, feed), or None for "stand still".
-        shift = bool(self.held & {'LEFTSHIFT', 'RIGHTSHIFT'})
-        ctrl = bool(self.held & {'LEFTCTRL', 'RIGHTCTRL'})
-        dx = ('RIGHT' in self.held) - ('LEFT' in self.held)   # both held: they cancel out
-        vertical = ('UP' in self.held) - ('DOWN' in self.held)
+    def vector(self, keys):
+        # What a set of keys asks for: (direction, feed), or None for "stand still".
+        shift = bool(keys & set(SHIFT_NAMES))
+        ctrl = bool(keys & set(CTRL_NAMES))
+        dx = ('RIGHT' in keys) - ('LEFT' in keys)   # both: they cancel out
+        vertical = ('UP' in keys) - ('DOWN' in keys)
         dy, dz = (0, vertical) if shift else (vertical, 0)
         direction = (dx, dy, dz)
         if direction == (0, 0, 0):
@@ -125,7 +172,18 @@ class JogKeyState:
             feed = feed / self.creepDivisor
         return direction, feed
 
-    def handleKey(self, name, pressed):
+    def desired(self):
+        # What the held keys ask for right now.
+        return self.vector(self.held)
+
+    def nextDeadline(self):
+        """When tick() must next be called to notice a hold, or None if no gesture is undecided."""
+        if self.gestureStart is None:
+            return None
+        return self.gestureStart + self.holdThreshold
+
+    def handleKey(self, name, pressed, now=None):
+        now = self.clock() if now is None else now
         if pressed:
             self.held.add(name)
         else:
@@ -134,8 +192,50 @@ class JogKeyState:
         if pressed and name in ('ENTER', 'ESC'):
             commands = [('cancel',)] if self.active else []
             self.active = None
+            self.gestureStart = None  # an undecided gesture is dropped: nothing had moved
+            self.gestureKeys.clear()
             return commands + [('accept',) if name == 'ENTER' else ('abort',)]
 
+        if self.gestureStart is not None:
+            # Undecided: remember every key seen, so a modifier pressed or released
+            # during a quick tap still counts (Alt down, tap Right, Alt up).
+            if pressed:
+                self.gestureKeys.add(name)
+            if not self.held & set(ARROW_NAMES):
+                return self.finishTap()
+            return self.tick(now)  # an event can arrive after the threshold has passed
+
+        if pressed and name in ARROW_NAMES and self.active is None \
+                and self.held & set(ARROW_NAMES) == {name}:
+            # The first arrow down from rest: wait to see whether it is a tap or a hold.
+            self.gestureStart = now
+            self.gestureKeys = set(self.held)
+            return self.tick(now)  # holdThreshold=0: a hold at once
+
+        return self.update()
+
+    def finishTap(self):
+        keys = self.gestureKeys
+        self.gestureStart = None
+        self.gestureKeys = set()
+        wanted = self.vector(keys)
+        if wanted is None:
+            return []  # e.g. Left and Right tapped together
+        size = self.fineTapStep if keys & set(ALT_NAMES) else self.tapStep
+        return [('step', wanted[0], size, wanted[1])]
+
+    def tick(self, now=None):
+        """Call this regularly: once holdThreshold has passed with an arrow still down,
+        returns the commands that start the continuous jog."""
+        now = self.clock() if now is None else now
+        if self.gestureStart is None or now - self.gestureStart < self.holdThreshold:
+            return []
+        self.gestureStart = None
+        self.gestureKeys = set()
+        return self.update()
+
+    def update(self):
+        # Continuous jog: make the running jog match the held keys.
         wanted = self.desired()
         if wanted == self.active:
             return []  # e.g. Ctrl pressed with no arrow held, or a key nobody maps
@@ -215,6 +315,31 @@ def planJog(direction, feed, position, bounds, margin=LIMIT_MARGIN):
     return gcode, tuple(sorted(rooms))
 
 
+def planStep(direction, size, feed, position, bounds, margin=LIMIT_MARGIN):
+    """One short $J line for a tap: each moving axis moves `size` mm.
+
+    Unlike planJog, each axis is clamped on its own: an axis with less than
+    `size` of room left moves only as far as its bound, an axis with no room
+    is dropped, and the other axis of a diagonal still moves its full step.
+    Returns (gcode, target) with target the machine position the step ends
+    at, or None if no moving axis has room.
+    """
+    words = []
+    target = dict(position)
+    for axis, sign in zip(AXES, direction):
+        if not sign:
+            continue
+        room = roomToBound(axis, sign, position, bounds, margin)
+        distance = math.floor(min(size, room) * 1000 + 1e-6) / 1000  # 0.001 mm, never past
+        if distance < MINIMUM_MOVE:
+            continue
+        words.append(f"{axis}{sign * distance:.3f}")
+        target[axis] = position[axis] + sign * distance
+    if not words:
+        return None
+    return f"$J=G91 G21 {' '.join(words)} F{feed:g}", target
+
+
 def parseStatus(report):
     """'<Jog|MPos:1.000,2.000,3.000|...>' -> (state, mpos or None, wco or None, wpos or None)."""
     if not report or not report.startswith('<'):
@@ -273,7 +398,8 @@ class JogSession:
         self.sleep = sleep
         self.clock = clock
         self.lastWco = None
-        self.running = None  # (direction, feed, movingAxes) of the jog Grbl is running
+        self.running = None  # (direction, feed, movingAxes) of the continuous jog Grbl is running
+        self.stepTarget = None  # where the last queued tap step ends, while steps may be running
 
     def machinePosition(self):
         # MPos from a status report.  With $10 set to report WPos, MPos = WPos + WCO,
@@ -288,10 +414,26 @@ class JogSession:
                 return {axis: wpos[axis] + self.lastWco[axis] for axis in AXES}
         raise JogError("Could not read the machine position from Grbl's status report.")
 
-    def waitUntilStopped(self):
+    def plannedPosition(self):
+        # Where the next move starts from.  While tap steps are still running (Grbl
+        # in Jog with no continuous jog), that is where the last queued step ends,
+        # not the MPos the machine is passing through: a step queued behind it
+        # starts there, and clamping from MPos could overrun the bound.
+        if self.stepTarget is not None:
+            state = self.grbl.getGrblState()
+            if state == 'Alarm':
+                self.stepTarget = None
+                raise JogError("Grbl went into Alarm while stepping (limit switch?). "
+                               "Clear it and re-home before continuing.")
+            if state == 'Jog':
+                return dict(self.stepTarget)
+            self.stepTarget = None
+        return self.machinePosition()
+
+    def waitUntilStopped(self, timeout=CANCEL_TIMEOUT):
         # After 0x85 Grbl decelerates in state Jog, then goes Idle.  The next $J must
         # wait for that, or it would be computed from a position that is still moving.
-        deadline = self.clock() + CANCEL_TIMEOUT
+        deadline = self.clock() + timeout
         while True:
             state = self.grbl.getGrblState()
             if state == 'Alarm':
@@ -300,31 +442,57 @@ class JogSession:
             if state != 'Jog':
                 return state
             if self.clock() > deadline:
-                raise JogError(f"Grbl was still jogging {CANCEL_TIMEOUT:g}s after jog-cancel.")
+                raise JogError(f"Grbl was still jogging {timeout:g}s after it should have stopped.")
             self.sleep(0.02)
 
     def cancel(self):
+        # 0x85 discards everything queued, tap steps included.  Only a continuous jog
+        # ending (or jog mode ending abnormally) sends it, never a key coming up.
         self.grbl.write(JOG_CANCEL)
         self.running = None
+        self.stepTarget = None
         self.waitUntilStopped()
 
     def jog(self, direction, feed, quiet=False):
-        planned = planJog(direction, feed, self.machinePosition(), self.bounds)
+        planned = planJog(direction, feed, self.plannedPosition(), self.bounds)
         if planned is None:
             self.running = None
             if not quiet:
                 self.out("At the travel limit in that direction; not moving.")
             return None
         gcode, movingAxes = planned
-        self.grbl.send(gcode)
+        self.grbl.send(gcode)  # queued behind any tap steps still running
         self.running = (direction, feed, movingAxes)
+        self.stepTarget = None
         return gcode
+
+    def step(self, direction, size, feed):
+        # One tap.  No cancel and no wait: $J lines queue in Grbl's planner, so
+        # rapid taps run one after another.  (When the planner is full, send()
+        # waits for Grbl's 'ok', which comes as soon as a step finishes.)
+        planned = planStep(direction, size, feed, self.plannedPosition(), self.bounds)
+        if planned is None:
+            self.out("At the travel limit in that direction; not moving.")
+            return None
+        gcode, target = planned
+        self.grbl.send(gcode)
+        self.stepTarget = target
+        return gcode
+
+    def finishSteps(self):
+        # Enter / Esc: let queued tap steps finish, so the position read afterwards
+        # is where they end.  (stop() would discard them.)
+        if self.stepTarget is not None and not self.running:
+            self.waitUntilStopped(STEP_FINISH_TIMEOUT)
+        self.stepTarget = None
 
     def execute(self, command):
         if command[0] == 'cancel':
             self.cancel()
         elif command[0] == 'jog':
             self.jog(command[1], command[2])
+        elif command[0] == 'step':
+            self.step(command[1], command[2], command[3])
         else:
             raise ValueError(f"Not a motion command: {command}")
 
@@ -353,18 +521,25 @@ class JogSession:
         self.cancel()
 
 
-def dispatchKey(keyState, session, name, pressed):
-    """Feed one key event through the logic and the driver.
-
-    Returns ACCEPTED or ABORTED when Enter/Esc ends jog mode, else None.
-    """
-    for command in keyState.handleKey(name, pressed):
-        if command[0] == 'accept':
-            return ACCEPTED
-        if command[0] == 'abort':
-            return ABORTED
+def runCommands(commands, session):
+    """Carry out JogKeyState commands.  Returns ACCEPTED or ABORTED when Enter/Esc
+    ends jog mode, else None."""
+    for command in commands:
+        if command[0] in ('accept', 'abort'):
+            session.finishSteps()
+            return ACCEPTED if command[0] == 'accept' else ABORTED
         session.execute(command)
     return None
+
+
+def dispatchKey(keyState, session, name, pressed, now=None):
+    """Feed one key event through the logic and the driver (see runCommands)."""
+    return runCommands(keyState.handleKey(name, pressed, now), session)
+
+
+def dispatchTick(keyState, session, now=None):
+    """Let the logic notice a hold that has passed the threshold."""
+    return runCommands(keyState.tick(now), session)
 
 
 # ---------------------------------------------------------------------------
@@ -407,8 +582,11 @@ def waitForKeysReleased(keyboards, timeout=3.0):
 
 
 def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP_DIVISOR,
-                   out=print):
+                   out=print, holdThreshold=None):
     """Jog from the keyboard until Enter (returns ACCEPTED) or Esc (returns ABORTED).
+
+    holdThreshold: seconds that tell a tap from a hold (default HOLD_THRESHOLD;
+    0 turns tap-to-step off).
 
     homed: whether $H has run since power-up; Grbl cannot tell us (see checkReadyToJog).
     Raises JogRefused, without moving anything, if jogging is not safe.
@@ -422,10 +600,12 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
                          "Run checkJogEnvironment() to check input-group access.")
 
     codeNames = {evdev.ecodes.ecodes[code]: name for code, name in EVDEV_KEY_NAMES.items()}
-    keyState = JogKeyState(xyFeed, zFeed, creepDivisor)
-    session = JogSession(grbl, bounds, out)
+    keyState = JogKeyState(xyFeed, zFeed, creepDivisor, holdThreshold, clock=time.monotonic)
+    session = JogSession(grbl, bounds, out, sleep=time.sleep, clock=time.monotonic)
 
-    out(f"Jog mode: arrows X/Y, Shift+Up/Down Z, hold Ctrl to creep (1/{creepDivisor:g} speed).")
+    out(f"Jog mode: arrows X/Y, Shift+Up/Down Z. Tap to step {keyState.tapStep:g} mm "
+        f"(Alt+tap {keyState.fineTapStep:g} mm), hold to jog; hold Ctrl to creep "
+        f"(1/{creepDivisor:g} speed).")
     out("Enter accepts, Esc aborts. The keyboard is captured until then.")
     waitForKeysReleased(keyboards)
     grabbed = []
@@ -438,7 +618,12 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
         devicesByFd = {device.fd: device for device in keyboards}
         lastPoll = time.monotonic()
         while True:
-            readable, _, _ = select.select(list(devicesByFd), [], [], POLL_INTERVAL)
+            # Wake up in time to notice an arrow held past the hold threshold.
+            timeout = POLL_INTERVAL
+            deadline = keyState.nextDeadline()
+            if deadline is not None:
+                timeout = max(0.0, min(timeout, deadline - time.monotonic()))
+            readable, _, _ = select.select(list(devicesByFd), [], [], timeout)
             for fd in readable:
                 for event in devicesByFd[fd].read():
                     # value 1 = press, 0 = release, 2 = auto-repeat (ignored)
@@ -450,6 +635,7 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
                     result = dispatchKey(keyState, session, name, event.value == 1)
                     if result:
                         return result
+            dispatchTick(keyState, session)
             # Auto-repeat keeps select() busy while a key is held, so poll by time.
             if time.monotonic() - lastPoll >= POLL_INTERVAL:
                 session.poll()
@@ -583,6 +769,8 @@ def main():
     parser.add_argument("--home", action="store_true", help="run the homing cycle ($H) first")
     parser.add_argument("--xy-feed", type=float, default=XY_FEED, help="mm/min")
     parser.add_argument("--z-feed", type=float, default=Z_FEED, help="mm/min")
+    parser.add_argument("--hold-threshold", type=float, default=HOLD_THRESHOLD,
+                        help="seconds; an arrow released sooner is a tap (one step), 0 turns taps off")
     arguments = parser.parse_args()
 
     environment = checkJogEnvironment()
@@ -601,7 +789,8 @@ def main():
         homed = askYes("Has the machine been homed ($H) since it was powered on? [y/N] ")
 
     try:
-        result = runKeyboardJog(grbl, homed, xyFeed=arguments.xy_feed, zFeed=arguments.z_feed)
+        result = runKeyboardJog(grbl, homed, xyFeed=arguments.xy_feed, zFeed=arguments.z_feed,
+                                holdThreshold=arguments.hold_threshold)
     except JogRefused as refusal:
         sys.exit(f"Not jogging: {refusal}")
     position = grbl.getMachineCoordinates()
