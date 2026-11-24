@@ -2,10 +2,16 @@
 """Unit tests for jog.py.  No evdev, no hardware, no sudo.
 
 A FakeGrbl records send()/write() calls and simulates just enough of Grbl
-1.1h: a $J moves toward its target, 0x85 stops it part-way after a few
-status polls in state Jog, and (like soft limits with $20=1) a jog target
-outside the travel box is rejected with error:15.  A fake evdev module with
-real pipe file descriptors exercises runKeyboardJog's select/grab/ungrab.
+1.1h: a $J moves toward its target, a $J sent while one runs queues behind
+it, 0x85 stops it part-way after a few status polls in state Jog, and (like
+soft limits with $20=1) a jog target outside the travel box is rejected with
+error:15.  A fake evdev module with real pipe file descriptors exercises
+runKeyboardJog's select/grab/ungrab, and a scripted Timeline stands in for
+select() and the clock, so holds and taps are timed without real sleeps.
+
+The step-8 tests of continuous jogging use holdThreshold=0 (every press is a
+hold at once); the step-10 tests use the real 250 ms threshold with `now`
+passed in.
 
 Run: python testJog.py
 """
@@ -28,7 +34,8 @@ HOME = {'X': -417.0, 'Y': -307.0, 'Z': -3.0}  # where $H leaves it: -$13x+$27 or
 
 
 class FakeGrbl:
-    def __init__(self, settings=None, position=None, state='Idle', decelPolls=2, stopFraction=0.5):
+    def __init__(self, settings=None, position=None, state='Idle', decelPolls=2, stopFraction=0.5,
+                 autoFinishPolls=None):
         self.settings = dict(settings or SETTINGS)
         self.position = dict(position or HOME)
         self.state = state
@@ -42,6 +49,10 @@ class FakeGrbl:
         self.pollsUntilIdle = 0
         self.cancelPending = False
         self.alarmOnCancel = False
+        self.autoFinishPolls = autoFinishPolls  # None: a jog runs until finish() or a cancel
+        self.pollsUntilDone = None
+        self.clock = None       # set to record when each line was sent
+        self.sendTimes = []
 
     # --- the GrblController methods jog.py may use ---
     def getSettings(self):
@@ -50,20 +61,26 @@ class FakeGrbl:
     def send(self, gcode):
         self.sent.append(gcode)
         self.log.append(('send', gcode))
+        if self.clock:
+            self.sendTimes.append(self.clock())
         match = re.match(r'\$J=G91 G21 ((?:[XYZ]-?[\d.]+ )+)F[\d.]+$', gcode)
         if not match:
             return
         if self.cancelPending and self.state == 'Jog':
             raise AssertionError("$J sent before the cancelled jog had stopped")
-        target = dict(self.position)
+        queued = self.state == 'Jog'   # Grbl plans it behind the jog(s) already running
+        target = dict(self.target if queued else self.position)
         for axis, value in re.findall(r'([XYZ])(-?[\d.]+)', match.group(1)):
             target[axis] += float(value)
         if self.settings.get('$20') == '1':
             for axis, setting in jog.TRAVEL_SETTINGS.items():
                 if target[axis] > 0 or target[axis] < -float(self.settings[setting]):
                     raise RuntimeError("Error during send(): b'error:15\\r\\n'")
-        self.start, self.target = dict(self.position), target
+        if not queued:
+            self.start = dict(self.position)
+        self.target = target
         self.state = 'Jog'
+        self.pollsUntilDone = self.autoFinishPolls
 
     def write(self, data):
         self.written.append(data)
@@ -81,6 +98,11 @@ class FakeGrbl:
                 self.state = 'Alarm' if self.alarmOnCancel else 'Idle'
                 self.cancelPending = False
             self.pollsUntilIdle -= 1
+        elif self.state == 'Jog' and self.pollsUntilDone is not None:
+            if self.pollsUntilDone <= 0:
+                self.finish()
+            else:
+                self.pollsUntilDone -= 1
         self.log.append(('status', self.state))
         p = self.position
         return f"<{self.state}|MPos:{p['X']:.3f},{p['Y']:.3f},{p['Z']:.3f}|FS:0,0>\r\n"
@@ -98,17 +120,32 @@ class FakeGrbl:
         return [line for line in self.sent if line.startswith('$J=')]
 
 
+def fakeClock(tick=0.01):
+    # Advances on every call, so a wait that never ends hits its timeout quickly.
+    state = {'now': 0.0}
+
+    def clock():
+        state['now'] += tick
+        return state['now']
+    return clock
+
+
 def makeSession(grbl=None):
     grbl = grbl or FakeGrbl()
     messages = []
     session = jog.JogSession(grbl, jog.softLimitBounds(grbl.settings), out=messages.append,
-                             sleep=lambda seconds: None)
+                             sleep=lambda seconds: None, clock=fakeClock())
     return grbl, session, messages
+
+
+def holdKeys(**overrides):
+    # Step-8 behaviour: every press is a hold at once.
+    return jog.JogKeyState(holdThreshold=0, **overrides)
 
 
 class JogKeyStateTests(unittest.TestCase):
     def setUp(self):
-        self.keys = jog.JogKeyState()
+        self.keys = holdKeys()
 
     def press(self, *names):
         commands = []
@@ -125,7 +162,7 @@ class JogKeyStateTests(unittest.TestCase):
     def testEachArrowStartsOneAxisJog(self):
         expected = {'RIGHT': (1, 0, 0), 'LEFT': (-1, 0, 0), 'UP': (0, 1, 0), 'DOWN': (0, -1, 0)}
         for key, direction in expected.items():
-            keys = jog.JogKeyState()
+            keys = holdKeys()
             self.assertEqual(keys.handleKey(key, True), [('jog', direction, 1000)], key)
             self.assertEqual(keys.handleKey(key, False), [('cancel',)], key)
 
@@ -169,7 +206,7 @@ class JogKeyStateTests(unittest.TestCase):
         self.assertEqual(jog.JogKeyState().handleKey('ESC', True), [('abort',)])
 
     def testSpeedsCanBeOverridden(self):
-        keys = jog.JogKeyState(xyFeed=2000, zFeed=500, creepDivisor=4)
+        keys = holdKeys(xyFeed=2000, zFeed=500, creepDivisor=4)
         self.assertEqual(keys.handleKey('UP', True), [('jog', (0, 1, 0), 2000)])
         self.assertEqual(keys.handleKey('LEFTCTRL', True), [('cancel',), ('jog', (0, 1, 0), 500)])
         keys.handleKey('LEFTSHIFT', True)
@@ -269,14 +306,14 @@ class JogSessionTests(unittest.TestCase):
 
     def testPressAndReleaseSendsJogThenCancel(self):
         grbl, session, _ = makeSession()
-        self.drive(session, jog.JogKeyState(), ('RIGHT', True), ('RIGHT', False))
+        self.drive(session, holdKeys(), ('RIGHT', True), ('RIGHT', False))
         self.assertEqual(grbl.jogs(), ["$J=G91 G21 X416.990 F1000"])
         self.assertEqual(grbl.written, [jog.JOG_CANCEL])
         self.assertEqual(grbl.state, 'Idle')  # waited for the deceleration to finish
 
     def testNextJogWaitsForCancelledJogToStop(self):
         grbl, session, _ = makeSession(FakeGrbl(decelPolls=5))
-        self.drive(session, jog.JogKeyState(), ('RIGHT', True), ('UP', True))
+        self.drive(session, holdKeys(), ('RIGHT', True), ('UP', True))
         # FakeGrbl raises if the diagonal arrives while still in Jog; check order too.
         cancelAt = grbl.log.index(('write', jog.JOG_CANCEL))
         diagonalAt = next(i for i, entry in enumerate(grbl.log)
@@ -288,25 +325,25 @@ class JogSessionTests(unittest.TestCase):
 
     def testReleasingOneOfTwoKeysGoesBackToOneAxis(self):
         grbl, session, _ = makeSession()
-        self.drive(session, jog.JogKeyState(), ('RIGHT', True), ('UP', True), ('UP', False))
+        self.drive(session, holdKeys(), ('RIGHT', True), ('UP', True), ('UP', False))
         self.assertTrue(re.fullmatch(r"\$J=G91 G21 X[\d.]+ F1000", grbl.jogs()[-1]))
         self.assertEqual(grbl.written, [jog.JOG_CANCEL, jog.JOG_CANCEL])
 
     def testCtrlReissuesAtCreepSpeed(self):
         grbl, session, _ = makeSession()
-        self.drive(session, jog.JogKeyState(), ('LEFTSHIFT', True), ('DOWN', True), ('LEFTCTRL', True))
+        self.drive(session, holdKeys(), ('LEFTSHIFT', True), ('DOWN', True), ('LEFTCTRL', True))
         self.assertEqual(grbl.jogs()[0], "$J=G91 G21 Z-106.990 F300")
         self.assertTrue(grbl.jogs()[1].endswith(" F30"))
 
     def testAtTheLimitNothingIsSent(self):
         grbl, session, messages = makeSession()
-        self.drive(session, jog.JogKeyState(), ('LEFT', True))
+        self.drive(session, holdKeys(), ('LEFT', True))
         self.assertEqual(grbl.jogs(), [])
         self.assertIn("At the travel limit", messages[0])
 
     def testDiagonalSlidesAlongTheEdgeItReaches(self):
         grbl, session, _ = makeSession()
-        self.drive(session, jog.JogKeyState(), ('RIGHT', True), ('UP', True))
+        self.drive(session, holdKeys(), ('RIGHT', True), ('UP', True))
         grbl.finish()   # X (cancelled half-way, so nearer its edge) reached its far edge
         session.poll()
         self.assertEqual(grbl.jogs()[-1], "$J=G91 G21 Y98.495 F1000")
@@ -318,25 +355,25 @@ class JogSessionTests(unittest.TestCase):
 
     def testPollWhileStillJoggingDoesNothing(self):
         grbl, session, _ = makeSession()
-        self.drive(session, jog.JogKeyState(), ('RIGHT', True))
+        self.drive(session, holdKeys(), ('RIGHT', True))
         session.poll()
         self.assertEqual(len(grbl.jogs()), 1)
 
     def testEnterCancelsAndAccepts(self):
         grbl, session, _ = makeSession()
-        results = self.drive(session, jog.JogKeyState(), ('DOWN', True), ('ENTER', True))
+        results = self.drive(session, holdKeys(), ('DOWN', True), ('ENTER', True))
         self.assertEqual(results, [None, jog.ACCEPTED])
         self.assertEqual(grbl.written, [jog.JOG_CANCEL])
 
     def testEscAborts(self):
         _, session, _ = makeSession()
-        self.assertEqual(self.drive(session, jog.JogKeyState(), ('ESC', True)), [jog.ABORTED])
+        self.assertEqual(self.drive(session, holdKeys(), ('ESC', True)), [jog.ABORTED])
 
     def testAlarmDuringCancelRaises(self):
         grbl, session, _ = makeSession()
         grbl.alarmOnCancel = True
         with self.assertRaises(jog.JogError):
-            self.drive(session, jog.JogKeyState(), ('RIGHT', True), ('RIGHT', False))
+            self.drive(session, holdKeys(), ('RIGHT', True), ('RIGHT', False))
 
     def testPositionFromWPosPlusWco(self):
         class WPosGrbl(FakeGrbl):
@@ -352,7 +389,8 @@ class JogSessionTests(unittest.TestCase):
 
 KEY_CODES = {name: code for code, name in enumerate(
     ['KEY_LEFT', 'KEY_RIGHT', 'KEY_UP', 'KEY_DOWN', 'KEY_LEFTSHIFT', 'KEY_RIGHTSHIFT',
-     'KEY_LEFTCTRL', 'KEY_RIGHTCTRL', 'KEY_ENTER', 'KEY_KPENTER', 'KEY_ESC', 'KEY_A'], start=100)}
+     'KEY_LEFTCTRL', 'KEY_RIGHTCTRL', 'KEY_LEFTALT', 'KEY_RIGHTALT', 'KEY_ENTER', 'KEY_KPENTER',
+     'KEY_ESC', 'KEY_A', 'KEY_KP8'], start=100)}
 EV_KEY = 1
 
 
@@ -366,6 +404,10 @@ class FakeDevice:
         self.grabbed = self.ungrabbed = self.closed = False
         if events or failOnRead:
             os.write(self.writeFd, b"x")
+
+    def queue(self, events):
+        self.events += [types.SimpleNamespace(type=EV_KEY, code=KEY_CODES[k], value=v) for k, v in events]
+        os.write(self.writeFd, b"x")
 
     def capabilities(self):
         return {EV_KEY: self.keys}
@@ -411,12 +453,15 @@ class RunKeyboardJogTests(unittest.TestCase):
         return grbl, result
 
     def testJogThenEnter(self):
+        # All five events arrive in one read, so Right is down for no time at all:
+        # since step 10 that is a tap, one 0.1 mm step.
         keyboard = FakeDevice(ARROWS, [('KEY_RIGHT', 1), ('KEY_RIGHT', 2), ('KEY_RIGHT', 0),
                                        ('KEY_A', 1), ('KEY_ENTER', 1)])
         mouse = FakeDevice(['KEY_A'])
-        grbl, result = self.run_({'/dev/input/event0': keyboard, '/dev/input/event1': mouse})
+        grbl, result = self.run_({'/dev/input/event0': keyboard, '/dev/input/event1': mouse},
+                                 FakeGrbl(autoFinishPolls=2))
         self.assertEqual(result, jog.ACCEPTED)
-        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X416.990 F1000"])  # repeat (value 2) ignored
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X0.100 F1000"])  # repeat (value 2) ignored
         self.assertTrue(keyboard.grabbed and keyboard.ungrabbed and keyboard.closed)
         self.assertFalse(mouse.grabbed)   # no arrow keys: not watched
         self.assertTrue(mouse.closed)
@@ -450,6 +495,426 @@ class RunKeyboardJogTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {'evdev': None}):  # import evdev -> ImportError
             with self.assertRaisesRegex(jog.JogRefused, "evdev"):
                 jog.runKeyboardJog(FakeGrbl(), True)
+
+
+# ---------------------------------------------------------------------------
+# Step 10: tap-to-step
+# ---------------------------------------------------------------------------
+
+MIDDLE = {'X': -200.0, 'Y': -150.0, 'Z': -50.0}  # room in every direction
+
+# (modifiers held, arrow) -> (direction, size, feed)
+TAPS = [
+    ((), 'RIGHT', (1, 0, 0), 0.1, 1000), ((), 'LEFT', (-1, 0, 0), 0.1, 1000),
+    ((), 'UP', (0, 1, 0), 0.1, 1000), ((), 'DOWN', (0, -1, 0), 0.1, 1000),
+    (('LEFTSHIFT',), 'UP', (0, 0, 1), 0.1, 300), (('RIGHTSHIFT',), 'DOWN', (0, 0, -1), 0.1, 300),
+    (('LEFTCTRL',), 'RIGHT', (1, 0, 0), 0.1, 100), (('RIGHTCTRL',), 'UP', (0, 1, 0), 0.1, 100),
+    (('LEFTCTRL', 'LEFTSHIFT'), 'DOWN', (0, 0, -1), 0.1, 30),
+    (('LEFTALT',), 'LEFT', (-1, 0, 0), 0.01, 1000), (('LEFTALT',), 'DOWN', (0, -1, 0), 0.01, 1000),
+    (('RIGHTALT',), 'RIGHT', (1, 0, 0), 0.01, 1000),          # AltGr counts as Alt
+    (('LEFTALT', 'LEFTSHIFT'), 'UP', (0, 0, 1), 0.01, 300),
+    (('RIGHTALT', 'RIGHTSHIFT'), 'DOWN', (0, 0, -1), 0.01, 300),
+]
+
+
+def gcodeFor(direction, size, feed):
+    words = [f"{axis}{sign * size:.3f}" for axis, sign in zip(jog.AXES, direction) if sign]
+    return f"$J=G91 G21 {' '.join(words)} F{feed:g}"
+
+
+class TapKeyStateTests(unittest.TestCase):
+    def tap(self, keys, modifiers, arrow, down=0.0, up=0.1):
+        commands = []
+        for name in modifiers:
+            commands += keys.handleKey(name, True, now=down)
+        commands += keys.handleKey(arrow, True, now=down)
+        self.assertEqual(commands, [], "nothing may move before the key comes up")
+        commands = keys.handleKey(arrow, False, now=up)
+        for name in modifiers:
+            commands += keys.handleKey(name, False, now=up)
+        commands += keys.tick(now=up + 10)
+        return commands
+
+    def testEachTapIsExactlyOneStepOfTheRightSizeAndSign(self):
+        for modifiers, arrow, direction, size, feed in TAPS:
+            with self.subTest(modifiers=modifiers, arrow=arrow):
+                commands = self.tap(jog.JogKeyState(), modifiers, arrow)
+                self.assertEqual(commands, [('step', direction, size, feed)])
+
+    def testNothingMovesDuringTheThreshold(self):
+        keys = jog.JogKeyState()
+        self.assertEqual(keys.handleKey('RIGHT', True, now=5.0), [])
+        self.assertEqual(keys.nextDeadline(), 5.25)
+        self.assertEqual(keys.tick(now=5.2499), [])
+        self.assertEqual(keys.handleKey('RIGHT', False, now=5.2499), [('step', (1, 0, 0), 0.1, 1000)])
+        self.assertIsNone(keys.nextDeadline())
+
+    def testHoldPastTheThresholdIsTheContinuousJog(self):
+        keys = jog.JogKeyState()
+        keys.handleKey('LEFTSHIFT', True, now=0.0)
+        keys.handleKey('DOWN', True, now=0.0)
+        self.assertEqual(keys.tick(now=0.25), [('jog', (0, 0, -1), 300)])
+        self.assertEqual(keys.tick(now=0.5), [])
+        self.assertEqual(keys.handleKey('LEFTCTRL', True, now=0.7), [('cancel',), ('jog', (0, 0, -1), 30)])
+        self.assertEqual(keys.handleKey('DOWN', False, now=2.0), [('cancel',)])  # no step
+
+    def testEventAfterTheThresholdAlsoStartsTheHold(self):
+        # A second arrow pressed after 250 ms, before any tick(): already a hold.
+        keys = jog.JogKeyState()
+        keys.handleKey('RIGHT', True, now=0.0)
+        self.assertEqual(keys.handleKey('UP', True, now=0.3), [('jog', (1, 1, 0), 1000)])
+
+    def testTwoKeysTappedTogetherGiveOneDiagonalStep(self):
+        keys = jog.JogKeyState()
+        self.assertEqual(keys.handleKey('RIGHT', True, now=0.0), [])
+        self.assertEqual(keys.handleKey('UP', True, now=0.05), [])
+        self.assertEqual(keys.handleKey('RIGHT', False, now=0.1), [])  # Up still down
+        self.assertEqual(keys.handleKey('UP', False, now=0.15), [('step', (1, 1, 0), 0.1, 1000)])
+
+    def testAltShiftDiagonalTapInXAndZ(self):
+        keys = jog.JogKeyState()
+        for name in ('LEFTALT', 'LEFTSHIFT', 'LEFT', 'UP'):
+            keys.handleKey(name, True, now=0.0)
+        keys.handleKey('LEFT', False, now=0.1)
+        self.assertEqual(keys.handleKey('UP', False, now=0.1), [('step', (-1, 0, 1), 0.01, 300)])
+
+    def testModifierLetGoDuringTheTapStillCounts(self):
+        keys = jog.JogKeyState()
+        keys.handleKey('LEFTALT', True, now=0.0)
+        keys.handleKey('RIGHT', True, now=0.02)
+        keys.handleKey('LEFTALT', False, now=0.05)
+        self.assertEqual(keys.handleKey('RIGHT', False, now=0.08), [('step', (1, 0, 0), 0.01, 1000)])
+
+    def testOppositeArrowsTappedTogetherDoNothing(self):
+        keys = jog.JogKeyState()
+        keys.handleKey('LEFT', True, now=0.0)
+        keys.handleKey('RIGHT', True, now=0.0)
+        keys.handleKey('LEFT', False, now=0.1)
+        self.assertEqual(keys.handleKey('RIGHT', False, now=0.1), [])
+
+    def testRapidTapsGiveOneStepEachAndNeverACancel(self):
+        keys = jog.JogKeyState()
+        commands = []
+        for n in range(5):
+            commands += keys.handleKey('UP', True, now=n * 0.1)
+            commands += keys.handleKey('UP', False, now=n * 0.1 + 0.04)
+            commands += keys.tick(now=n * 0.1 + 0.06)
+        self.assertEqual(commands, [('step', (0, 1, 0), 0.1, 1000)] * 5)
+
+    def testTapAfterAHoldIsATapAgain(self):
+        keys = jog.JogKeyState()
+        keys.handleKey('RIGHT', True, now=0.0)
+        keys.tick(now=1.0)
+        self.assertEqual(keys.handleKey('RIGHT', False, now=2.0), [('cancel',)])
+        keys.handleKey('RIGHT', True, now=3.0)
+        self.assertEqual(keys.handleKey('RIGHT', False, now=3.1), [('step', (1, 0, 0), 0.1, 1000)])
+
+    def testEnterDuringAnUndecidedTapMovesNothing(self):
+        keys = jog.JogKeyState()
+        keys.handleKey('RIGHT', True, now=0.0)
+        self.assertEqual(keys.handleKey('ENTER', True, now=0.1), [('accept',)])
+        self.assertEqual(keys.handleKey('RIGHT', False, now=0.15), [])
+        self.assertEqual(keys.tick(now=1.0), [])
+
+    def testThresholdIsAModuleConstantThatCanBeOverridden(self):
+        self.assertEqual((jog.HOLD_THRESHOLD, jog.TAP_STEP, jog.FINE_TAP_STEP), (0.25, 0.1, 0.01))
+        with mock.patch.object(jog, 'HOLD_THRESHOLD', 0.5):
+            keys = jog.JogKeyState()
+        keys.handleKey('RIGHT', True, now=0.0)
+        self.assertEqual(keys.tick(now=0.4), [])
+        self.assertEqual(keys.handleKey('RIGHT', False, now=0.45), [('step', (1, 0, 0), 0.1, 1000)])
+        keys = jog.JogKeyState(holdThreshold=0.1)
+        keys.handleKey('RIGHT', True, now=0.0)
+        self.assertEqual(keys.tick(now=0.1), [('jog', (1, 0, 0), 1000)])
+
+    def testUsesItsClockWhenNotToldTheTime(self):
+        now = [10.0]
+        keys = jog.JogKeyState(clock=lambda: now[0])
+        keys.handleKey('DOWN', True)
+        now[0] = 10.3
+        self.assertEqual(keys.tick(), [('jog', (0, -1, 0), 1000)])
+
+
+class PlanStepTests(unittest.TestCase):
+    bounds = jog.softLimitBounds(SETTINGS)
+
+    def testFullStepWithRoom(self):
+        gcode, target = jog.planStep((0, 0, -1), 0.01, 300, MIDDLE, self.bounds)
+        self.assertEqual(gcode, "$J=G91 G21 Z-0.010 F300")
+        self.assertAlmostEqual(target['Z'], -50.01)
+
+    def testShortenedAtTheBound(self):
+        gcode, target = jog.planStep((1, 0, 0), 0.1, 1000, dict(MIDDLE, X=-0.06), self.bounds)
+        self.assertEqual(gcode, "$J=G91 G21 X0.050 F1000")  # 0.06 - the 0.01 margin
+        self.assertAlmostEqual(target['X'], -0.01)
+
+    def testRefusedAtTheBound(self):
+        self.assertIsNone(jog.planStep((-1, 0, 0), 0.1, 1000, HOME, self.bounds))  # home-end inset
+        self.assertIsNone(jog.planStep((0, 0, 1), 0.01, 300, HOME, self.bounds))
+
+    def testDiagonalAxesAreClampedSeparately(self):
+        gcode, _ = jog.planStep((1, 1, 0), 0.1, 1000, dict(MIDDLE, X=-0.06), self.bounds)
+        self.assertEqual(gcode, "$J=G91 G21 X0.050 Y0.100 F1000")
+        gcode, _ = jog.planStep((-1, 1, 0), 0.1, 1000, dict(MIDDLE, X=HOME['X']), self.bounds)
+        self.assertEqual(gcode, "$J=G91 G21 Y0.100 F1000")  # X dropped, Y still steps
+
+
+class TapSessionTests(unittest.TestCase):
+    def tap(self, keys, session, arrows, modifiers=(), at=0.0):
+        results = []
+        for name in tuple(modifiers) + tuple(arrows):
+            results.append(jog.dispatchKey(keys, session, name, True, now=at))
+        for name in tuple(arrows) + tuple(modifiers):
+            results.append(jog.dispatchKey(keys, session, name, False, now=at + 0.05))
+        results.append(jog.dispatchTick(keys, session, now=at + 0.06))
+        return results
+
+    def testEachTapSendsOneStepAndNoCancel(self):
+        for modifiers, arrow, direction, size, feed in TAPS:
+            with self.subTest(modifiers=modifiers, arrow=arrow):
+                grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE))
+                self.tap(jog.JogKeyState(), session, [arrow], modifiers)
+                self.assertEqual(grbl.jogs(), [gcodeFor(direction, size, feed)])
+                self.assertEqual(grbl.written, [])
+
+    def testTwoKeyTapSendsOneDiagonalStep(self):
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE))
+        self.tap(jog.JogKeyState(), session, ['LEFT', 'DOWN'], ['LEFTALT'])
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X-0.010 Y-0.010 F1000"])
+
+    def testRapidTapsQueueWithoutACancel(self):
+        # The fake stays in Jog until finish(): every step after the first is sent
+        # while the earlier ones are still running, and must queue behind them.
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE))
+        keys = jog.JogKeyState()
+        for n in range(5):
+            self.tap(keys, session, ['RIGHT'], at=n * 0.1)
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X0.100 F1000"] * 5)
+        self.assertEqual(grbl.written, [])
+        self.assertEqual(grbl.state, 'Jog')
+        self.assertAlmostEqual(grbl.target['X'], -199.5)
+
+    def testQueuedStepsAreClampedFromWhereTheQueueEnds(self):
+        # MPos still reads X-0.25 while the steps run; clamping from it would
+        # send a third full step past the bound (error:15 from the fake).
+        grbl, session, messages = makeSession(FakeGrbl(position=dict(MIDDLE, X=-0.25)))
+        keys = jog.JogKeyState()
+        for n in range(4):
+            self.tap(keys, session, ['RIGHT'], at=n * 0.1)
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X0.100 F1000", "$J=G91 G21 X0.100 F1000",
+                                       "$J=G91 G21 X0.040 F1000"])
+        self.assertEqual(messages, ["At the travel limit in that direction; not moving."])
+        self.assertAlmostEqual(grbl.target['X'], -0.01)
+
+    def testStepTowardHomeAtHomeIsRefused(self):
+        grbl, session, messages = makeSession()
+        self.tap(jog.JogKeyState(), session, ['UP'], ['LEFTSHIFT'])
+        self.assertEqual(grbl.jogs(), [])
+        self.assertIn("At the travel limit", messages[0])
+
+    def testHoldAfterQueuedStepsPlansFromTheirEnd(self):
+        grbl, session, _ = makeSession(FakeGrbl(position=dict(MIDDLE, X=-0.5)))
+        keys = jog.JogKeyState()
+        self.tap(keys, session, ['RIGHT'], at=0.0)
+        self.tap(keys, session, ['RIGHT'], at=0.1)
+        jog.dispatchKey(keys, session, 'RIGHT', True, now=0.2)
+        jog.dispatchTick(keys, session, now=0.45)
+        self.assertEqual(grbl.jogs()[-1], "$J=G91 G21 X0.290 F1000")  # from X-0.3, not -0.5
+        self.assertEqual(grbl.written, [])
+        jog.dispatchKey(keys, session, 'RIGHT', False, now=1.0)
+        self.assertEqual(grbl.written, [jog.JOG_CANCEL])  # only the hold is cancelled
+
+    def testHoldThroughTheSessionIsTheContinuousJog(self):
+        grbl, session, _ = makeSession()
+        keys = jog.JogKeyState()
+        jog.dispatchKey(keys, session, 'RIGHT', True, now=0.0)
+        jog.dispatchTick(keys, session, now=0.2)
+        self.assertEqual(grbl.jogs(), [])
+        jog.dispatchTick(keys, session, now=0.25)
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X416.990 F1000"])
+        jog.dispatchKey(keys, session, 'RIGHT', False, now=0.8)
+        self.assertEqual(grbl.written, [jog.JOG_CANCEL])
+
+    def testEnterLetsQueuedStepsFinish(self):
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE, autoFinishPolls=3))
+        keys = jog.JogKeyState()
+        self.tap(keys, session, ['DOWN'], ['LEFTSHIFT'], at=0.0)
+        self.tap(keys, session, ['DOWN'], ['LEFTSHIFT'], at=0.1)
+        self.assertEqual(jog.dispatchKey(keys, session, 'ENTER', True, now=0.2), jog.ACCEPTED)
+        self.assertEqual(grbl.written, [])   # not cancelled
+        self.assertEqual(grbl.state, 'Idle')  # waited for them
+        self.assertAlmostEqual(grbl.position['Z'], -50.2)
+
+    def testEnterWaitsForQueuedStepsBeforeAnyCancel(self):
+        # The steps finish by themselves after a few polls; Enter must poll until
+        # then and never send 0x85, so the accepted position includes every tap.
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE, autoFinishPolls=5))
+        keys = jog.JogKeyState()
+        for n in range(3):
+            self.tap(keys, session, ['RIGHT'], at=n * 0.1)
+        self.assertEqual(grbl.state, 'Jog')
+        before = len(grbl.log)
+        self.assertEqual(jog.dispatchKey(keys, session, 'ENTER', True, now=0.4), jog.ACCEPTED)
+        self.assertNotIn(('write', jog.JOG_CANCEL), grbl.log)
+        self.assertGreaterEqual(grbl.log[before:].count(('status', 'Jog')), 5)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -199.7)
+        self.assertIsNone(session.stepTarget)
+
+    def testEscCancelsQueuedStepsAtOnce(self):
+        # The fake never finishes the steps by itself (no autoFinishPolls), so a
+        # wait for them would run into STEP_FINISH_TIMEOUT and raise JogError.
+        # Esc must instead send 0x85 first, then wait only for Grbl to leave Jog.
+        clock = fakeClock()
+        grbl = FakeGrbl(position=dict(MIDDLE, X=-0.25))
+        session = jog.JogSession(grbl, jog.softLimitBounds(grbl.settings), out=[].append,
+                                 sleep=lambda seconds: None, clock=clock)
+        keys = jog.JogKeyState()
+        self.tap(keys, session, ['RIGHT'], at=0.0)
+        self.tap(keys, session, ['RIGHT'], at=0.1)
+        self.assertEqual(grbl.state, 'Jog')
+        self.assertAlmostEqual(session.stepTarget['X'], -0.05)
+        before = len(grbl.log)
+        start = clock()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.2), jog.ABORTED)
+        self.assertEqual(grbl.log[before], ('write', jog.JOG_CANCEL))  # before any wait
+        self.assertEqual(grbl.written, [jog.JOG_CANCEL])
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -0.15)  # stopped part-way: steps discarded
+        self.assertLess(clock() - start, jog.CANCEL_TIMEOUT)
+        self.assertIsNone(session.stepTarget)
+        self.assertIsNone(keys.nextDeadline())
+        # Nothing carries over: the next tap plans from MPos (-0.15), not from -0.05.
+        self.tap(keys, session, ['RIGHT'], at=1.0)
+        self.assertEqual(grbl.jogs()[-1], "$J=G91 G21 X0.100 F1000")
+        self.assertAlmostEqual(grbl.target['X'], -0.05)
+
+    def testEscWithNothingQueuedSendsNothing(self):
+        grbl, session, _ = makeSession()
+        keys = jog.JogKeyState()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.0), jog.ABORTED)
+        self.assertEqual((grbl.sent, grbl.written, grbl.state), ([], [], 'Idle'))
+
+    def testEscAfterStepsHaveFinishedStillAborts(self):
+        grbl, session, _ = makeSession(FakeGrbl(position=MIDDLE))
+        keys = jog.JogKeyState()
+        self.tap(keys, session, ['LEFT'], at=0.0)
+        grbl.finish()
+        self.assertEqual(jog.dispatchKey(keys, session, 'ESC', True, now=0.5), jog.ABORTED)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertAlmostEqual(grbl.position['X'], -200.1)  # the finished step is kept
+        self.assertIsNone(session.stepTarget)
+
+    def testEnterDuringAHoldStillCancels(self):
+        grbl, session, _ = makeSession()
+        keys = jog.JogKeyState()
+        jog.dispatchKey(keys, session, 'RIGHT', True, now=0.0)
+        jog.dispatchTick(keys, session, now=0.3)
+        self.assertEqual(jog.dispatchKey(keys, session, 'ENTER', True, now=0.5), jog.ACCEPTED)
+        self.assertEqual(grbl.written, [jog.JOG_CANCEL])
+
+
+class Timeline:
+    """Stands in for select.select() and the clock in runKeyboardJog.
+
+    script is [(time, key, value), ...].  select() jumps the clock to the next
+    scripted event if it falls within the timeout (and delivers every event
+    due by then), else to the end of the timeout.
+    """
+
+    def __init__(self, device, script):
+        self.device = device
+        self.script = list(script)
+        self.now = 0.0
+        self.timeouts = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def select(self, readers, writers, errors, timeout):
+        self.timeouts.append((self.now, timeout))
+        if len(self.timeouts) > 10000:
+            raise AssertionError("runKeyboardJog is spinning")
+        if not self.script:
+            raise AssertionError("the script ran out before Enter/Esc")
+        if self.script[0][0] <= self.now + timeout:
+            self.now = max(self.now, self.script[0][0])
+            due = []
+            while self.script and self.script[0][0] <= self.now:
+                due.append(self.script.pop(0)[1:])
+            self.device.queue(due)
+            return [self.device.fd], [], []
+        self.now += timeout
+        return [], [], []
+
+
+class TapThroughKeyboardLoopTests(unittest.TestCase):
+    def run_(self, script, grbl=None):
+        keyboard = FakeDevice(ARROWS + ['KEY_LEFTALT', 'KEY_RIGHTALT', 'KEY_LEFTSHIFT'])
+        timeline = Timeline(keyboard, script)
+        grbl = grbl or FakeGrbl(position=MIDDLE, autoFinishPolls=2)
+        grbl.clock = timeline.monotonic
+        messages = []
+        fakeTime = types.SimpleNamespace(monotonic=timeline.monotonic, sleep=timeline.sleep)
+        with mock.patch.object(jog, 'importEvdev', return_value=fakeEvdev({'/dev/input/event0': keyboard})), \
+                mock.patch.object(jog, 'select', types.SimpleNamespace(select=timeline.select)), \
+                mock.patch.object(jog, 'time', fakeTime):
+            result = jog.runKeyboardJog(grbl, True, out=messages.append)
+        return grbl, result, timeline, keyboard, messages
+
+    def testHoldStartsTheJogAtTheThreshold(self):
+        grbl, result, timeline, _, _ = self.run_(
+            [(0.0, 'KEY_RIGHT', 1), (1.0, 'KEY_RIGHT', 0), (1.5, 'KEY_ENTER', 1)], FakeGrbl())
+        self.assertEqual(result, jog.ACCEPTED)
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X416.990 F1000"])
+        self.assertAlmostEqual(grbl.sendTimes[0], 0.25)  # select woke up for the threshold
+        self.assertIn((0.0, 0.2), timeline.timeouts)      # first wait: the poll interval
+        self.assertTrue(any(abs(timeout - 0.05) < 1e-9 for _, timeout in timeline.timeouts))
+
+    def testTapsWithAltAndAltGrStepAndEnterKeepsThem(self):
+        grbl, result, _, keyboard, messages = self.run_([
+            (0.0, 'KEY_RIGHT', 1), (0.1, 'KEY_RIGHT', 0),
+            (0.5, 'KEY_LEFTALT', 1), (0.55, 'KEY_UP', 1), (0.6, 'KEY_UP', 0), (0.65, 'KEY_LEFTALT', 0),
+            (0.7, 'KEY_RIGHTALT', 1), (0.72, 'KEY_LEFTSHIFT', 1), (0.75, 'KEY_DOWN', 1),
+            (0.8, 'KEY_DOWN', 0), (0.85, 'KEY_LEFTSHIFT', 0), (0.86, 'KEY_RIGHTALT', 0),
+            (1.0, 'KEY_ENTER', 1)])
+        self.assertEqual(result, jog.ACCEPTED)
+        self.assertEqual(grbl.jogs(), ["$J=G91 G21 X0.100 F1000", "$J=G91 G21 Y0.010 F1000",
+                                       "$J=G91 G21 Z-0.010 F300"])
+        self.assertEqual([round(t, 3) for t in grbl.sendTimes], [0.1, 0.6, 0.8])  # on release
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertEqual((round(grbl.position['X'], 3), round(grbl.position['Y'], 3),
+                          round(grbl.position['Z'], 3)), (-199.9, -149.99, -50.01))
+        self.assertTrue(keyboard.grabbed and keyboard.ungrabbed)
+        self.assertIn("Tap to step 0.1 mm (Alt+tap 0.01 mm)", messages[0])
+
+    def testEscAfterTapsCancelsAtOnceThroughTheLoop(self):
+        # Steps that never finish by themselves: Esc must not wait for them.
+        grbl, result, timeline, keyboard, messages = self.run_([
+            (0.0, 'KEY_RIGHT', 1), (0.05, 'KEY_RIGHT', 0),
+            (0.1, 'KEY_RIGHT', 1), (0.15, 'KEY_RIGHT', 0),
+            (0.2, 'KEY_ESC', 1)], FakeGrbl(position=MIDDLE))
+        self.assertEqual(result, jog.ABORTED)
+        self.assertEqual(len(grbl.jogs()), 2)
+        self.assertEqual(grbl.written[0], jog.JOG_CANCEL)
+        self.assertEqual(grbl.state, 'Idle')
+        self.assertLess(grbl.position['X'], -199.8 + 1e-9)  # not where both taps would end
+        self.assertLess(timeline.now, jog.CANCEL_TIMEOUT)
+        self.assertTrue(keyboard.ungrabbed)
+        self.assertIn("Esc aborts at once", messages[1])
+
+    def testKeypadArrowsAreStillIgnored(self):
+        grbl, result, _, _, _ = self.run_([(0.0, 'KEY_KP8', 1), (0.1, 'KEY_KP8', 0), (0.2, 'KEY_ESC', 1)])
+        self.assertEqual(result, jog.ABORTED)
+        self.assertEqual(grbl.jogs(), [])
+
+    def testAltKeysAreMapped(self):
+        self.assertEqual((jog.EVDEV_KEY_NAMES['KEY_LEFTALT'], jog.EVDEV_KEY_NAMES['KEY_RIGHTALT']),
+                         ('LEFTALT', 'RIGHTALT'))
+        self.assertNotIn('KEY_KP8', jog.EVDEV_KEY_NAMES)
 
 
 class EnvironmentCheckTests(unittest.TestCase):

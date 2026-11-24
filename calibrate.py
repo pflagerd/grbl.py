@@ -549,7 +549,8 @@ def probeSurface(grbl, settings, plateThickness, ask, out=print, pinTimeout=PROB
 
 def jogToSurface(grbl, ask, out, runJog):
     # Returns the spindle z with the tip on the surface, or None if Esc was pressed.
-    ask("Jog the bit tip down onto the surface: Shift+Down lowers Z, hold Ctrl to creep "
+    ask("Jog the bit tip down onto the surface: Shift+Down lowers Z, hold Ctrl to creep, "
+        "tap Shift+Down to step 0.1 mm, Alt+Shift+Down 0.01 mm "
         "(a sheet of paper under the tip helps).  Enter accepts, Esc aborts.  "
         "Press Enter to start jogging. ")
     if runJog(grbl, True, out=out) != jogModule.ACCEPTED:
