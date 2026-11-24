@@ -1,7 +1,9 @@
+import json
 import re
 import serial
 import time
 import warnings
+from dataclasses import dataclass, field, fields, asdict
 
 debug = False
 
@@ -89,7 +91,65 @@ def parseStatusReport(text):
     return {'state': match.group(1), 'subState': match.group(2), 'fields': fields}
 
 
+@dataclass
+class MachineProfile:
+    # Identity / connection
+    name: str                              # used in logs and warnings
+    portDeviceName: str = "/dev/ttyUSB0"
+    portBaudRate: int = 115200
+
+    # Geometry — the usable work envelope, in mm, measured from the
+    # bottom-left corner (where G54's origin gets set after homing).
+    workAreaX: float = 0.0
+    workAreaY: float = 0.0
+    workAreaZ: float = 0.0                 # usable depth below Z origin
+
+    # Where the machine physically homes to.
+    homingPosition: str = "3"              # HomingPositions.bottomLeftZUp
+
+    # Motion defaults
+    defaultFeedRate: float = 400.0         # mm/min for cutting moves
+    rapidZClearance: float = 5.0           # safe height for travel moves
+
+    # Tool type — laser mode changes spindle handling (M4 dynamic power, no spin-up)
+    isLaser: bool = False
+    defaultSpindleSpeed: float = 1000.0    # RPM, or S-value power for laser
+
+    # Grbl $-settings this machine must have, e.g. {"$23": "3", "$130": "300.000"}.
+    # Values are strings compared against the exact text Grbl echoes from `$$`.
+    expectedSettings: dict = field(default_factory=dict)
+
+    # Calibration provenance — filled in by calibrate.py
+    schemaVersion: int = 1
+    firmwareVersion: str = ""              # from the startup banner, e.g. "1.1h"
+    calibratedOn: str = ""                 # ISO date of the capability test
+    pullOff: float = 1.0                   # $27 at calibration time; baked into travel numbers
+    settingsSnapshot: dict = field(default_factory=dict)   # full $$ dump at calibration
+    homeableCorners: dict = field(default_factory=dict)    # {"0": True, "3": True, ...} per $23 value tried
+    switchesVerified: dict = field(default_factory=dict)   # {"X": True, ...} both ends press-tested
+
+    def save(self, path):
+        with open(path, 'w') as jsonFile:
+            json.dump(asdict(self), jsonFile, indent=2)
+            jsonFile.write('\n')
+
+    @classmethod
+    def load(cls, path):
+        with open(path) as jsonFile:
+            data = json.load(jsonFile)
+        knownFields = {dataclassField.name for dataclassField in fields(cls)}
+        unknown = set(data) - knownFields
+        if unknown:
+            # A newer schema may add fields; ignore them so old code can still load.
+            warnings.warn(f"Profile {path} has unknown fields (newer schema?): {sorted(unknown)}")
+        return cls(**{key: value for key, value in data.items() if key in knownFields})
+
+
 class GrblController(serial.Serial):
+    # Profile settings where a mismatch means motion in the wrong direction or without
+    # bounds checking — a tool crash waiting to happen.  These raise instead of warning.
+    CRITICAL_SETTINGS = ("$3", "$23", "$20", "$130", "$131", "$132")
+
     class Vector:
         def __init__(self, *args, **kwargs):
             if args and len(args) == 1 and isinstance(args[0], (list, tuple)):
@@ -123,10 +183,6 @@ class GrblController(serial.Serial):
         def __str__(self):
             return f'({self._attributes[0]}, {self._attributes[1]}, {self._attributes[2]})'
 
-    class Point(Vector):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-
     class HomingPositions:
         topRightZUp = '0'
         topLeftZUp = '1'
@@ -134,28 +190,37 @@ class GrblController(serial.Serial):
         bottomLeftZUp = '3'
         topRightZDown = '4'
 
-    def __init__(self, portDeviceName="/dev/ttyUSB0", portBaudRate=115200, handshakeDeadlineSeconds=10.0, resetOnConnect=False):
+    def __init__(self, portDeviceName=None, portBaudRate=None, handshakeDeadlineSeconds=10.0, resetOnConnect=False,
+                 homeOnConnect=False, profile=None, applySettings=False):
+        self.profile = profile
+        self.grblVersion = None  # set during the handshake, for example '1.1h'
         self.spindleMotorSpeed = 0
-        self.homingPosition = self.HomingPositions.bottomLeftZUp
+        self.homingPosition = profile.homingPosition if profile else self.HomingPositions.bottomLeftZUp
         self.machineCoordinates = None
 
-        self.portDeviceName = portDeviceName
-        self.portBaudRate = portBaudRate
+        # Explicit arguments win over the profile; the profile wins over the defaults.
+        self.portDeviceName = portDeviceName or (profile.portDeviceName if profile else "/dev/ttyUSB0")
+        self.portBaudRate = portBaudRate or (profile.portBaudRate if profile else 115200)
         super().__init__(self.portDeviceName, self.portBaudRate, timeout=30)
 
-        # Read whatever Grbl sends at startup, ask it for its state, and unlock it if it is in Alarm.
-        # Raises GrblStartupError (or a subclass) saying what was received if that cannot be done.
         try:
+            # Read whatever Grbl sends at startup, ask it for its state, and unlock it if it is in Alarm.
+            # Raises GrblStartupError (or a subclass) saying what was received if that cannot be done.
             self._handshake(handshakeDeadlineSeconds, resetOnConnect)
-        except GrblStartupError:
+
+            # Verify (or apply) the machine's $-settings before anything moves — homing with
+            # a wrong $23 drives the axes away from the switches and into the hard stops.
+            if profile:
+                self._verifyProfileSettings(applySettings)
+        except RuntimeError:  # GrblStartupError, and the hard error for unsafe settings
             self.close()
             raise
 
-        # DPP: Set spindle motor to 1000
-        self.send("S1000")
+        # DPP: Set spindle motor speed
+        self.send(f'S{profile.defaultSpindleSpeed if profile else 10000}')
 
-        # DPP: Set homing origin to lower left corner
-        self.send('$23=' + GrblController.HomingPositions.bottomLeftZUp)
+        # DPP: Set homing origin
+        self.send('$23=' + self.homingPosition)
 
         # DPP: Turn off spindle motor
         self.send("M5")
@@ -170,8 +235,13 @@ class GrblController(serial.Serial):
         # b'<Alarm|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0|WCO:-405.000,-299.000,-84.000>\r\n'
         # where the "Alarm" status indicates the rest of the data is uncertain.
 
+        if homeOnConnect:
+            self.runHomingCycle()
+
     def __del__(self):
-        if super():  # TODO: ChatGPT suggested super().close() and it crashed so I added the if.  I don't about this.
+        # getattr guards against instances that never finished __init__ (e.g. the port
+        # failed to open), where is_open doesn't exist yet.
+        if getattr(self, 'is_open', False):
             super().close()
 
     def _now(self):
@@ -326,6 +396,54 @@ class GrblController(serial.Serial):
             # Unlock
             self.send("$X")
 
+    def getSettings(self):
+        # Query all $-settings; Grbl answers with one "$n=value" line each, then "ok".
+        gcode = "$$\n".encode('utf-8')
+        if debug:
+            print("sending " + str(gcode))
+        self.write(gcode)  # self, not super(), like send(): lets tests substitute a scripted controller
+        settings = {}
+        while True:
+            line = self.readline()
+            if debug:
+                print("received " + str(line))
+            if line in [b"ok\r\n", b""]:
+                break
+            if b'error:' in line:
+                raise RuntimeError("Error during getSettings(): " + str(line))
+            text = line.decode('utf-8', errors='replace').strip()
+            if text.startswith('$') and '=' in text:
+                key, _, value = text.partition('=')
+                settings[key] = value
+        return settings
+
+    def _verifyProfileSettings(self, applySettings):
+        def findMismatches():
+            actual = self.getSettings()
+            return {key: (expected, actual.get(key))
+                    for key, expected in self.profile.expectedSettings.items()
+                    if actual.get(key) != expected}
+
+        mismatches = findMismatches()
+        if mismatches and applySettings:
+            for key, (expected, _) in mismatches.items():
+                self.send(f'{key}={expected}')
+            mismatches = findMismatches()  # re-read: anything still wrong didn't take
+
+        if not mismatches:
+            return
+
+        report = "; ".join(f"{key} is {actual} (want {expected})"
+                           for key, (expected, actual) in mismatches.items())
+        critical = [key for key in mismatches if key in self.CRITICAL_SETTINGS]
+        if critical:
+            raise RuntimeError(
+                f"Machine '{self.profile.name}' has unsafe $-settings ({', '.join(critical)} "
+                f"control motion direction/bounds): {report}. "
+                + ("Applying them failed." if applySettings
+                   else "Fix them or connect with applySettings=True."))
+        warnings.warn(f"Machine '{self.profile.name}' settings differ from profile: {report}")
+
     def getMachineCoordinates(self):
         # get current machine coordinates
         gcode = "?\n"
@@ -354,7 +472,11 @@ class GrblController(serial.Serial):
         pass
 
     def getGrblState(self):
-        pass
+        # The machine state from a fresh status report: 'Idle', 'Run', 'Hold', 'Jog',
+        # 'Alarm', 'Door', 'Check', 'Home', 'Sleep' — or None if no report came back.
+        # Substate suffixes are stripped: '<Hold:0|...>' → 'Hold'.
+        report = parseStatusReport(self.getStatus() or "")
+        return report['state'] if report else None
 
     def getGCodeParameters(self):
         pass
@@ -405,11 +527,11 @@ class GrblController(serial.Serial):
         else:
             newPosition = GrblController.Vector(*args, **kwargs)
 
-        feedRate = 400
+        feedRate = self.profile.defaultFeedRate if self.profile else 400
         if 'feedRate' in kwargs:
             feedRate = float(kwargs['feedRate'])
 
-        spindleSpeed = 1000
+        spindleSpeed = self.profile.defaultSpindleSpeed if self.profile else 1000
         if 'spindleSpeed' in kwargs:
             spindleSpeed = float(kwargs['spindleSpeed'])
 
@@ -457,7 +579,60 @@ class GrblController(serial.Serial):
         return self.getMachineCoordinates()
 
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
-    def runHomingCycle(self, homingPosition=HomingPositions.bottomLeftZUp):
+    def softReset(self):
+        # Ctrl-X: immediate reset.  Grbl reboots and re-prints its banner; drain it all
+        # so the next command doesn't read stale lines.
+        super().write(b'\x18')
+        originalTimeout = self.timeout
+        self.timeout = 2
+        try:
+            while True:
+                line = super().readline()
+                if line == b"":
+                    break
+                if debug:
+                    print("received " + str(line))
+        finally:
+            self.timeout = originalTimeout
+
+    def tryHomingCycle(self, homingPosition):
+        # Like runHomingCycle(), but a homing failure (switch not found / lost) returns
+        # the alarm code as a string instead of hanging or raising — used by the
+        # calibration capability test where "this corner doesn't home" is a result.
+        # Returns None on success.
+        self.send('$23=' + homingPosition)
+        originalTimeout = self.timeout
+        self.timeout = 120  # homing seeks the full axis travel at seek rate; allow time
+        try:
+            super().write(b"$H\n")
+            while True:
+                line = super().readline()
+                if debug:
+                    print("received " + str(line))
+                if line == b"ok\r\n":
+                    self.homingPosition = homingPosition
+                    return None
+                if line.startswith(b"ALARM:"):
+                    alarmCode = line.decode('utf-8', errors='replace').strip().partition(':')[2]
+                    self.softReset()
+                    self.send("$X")  # reset after a homing alarm leaves Grbl locked
+                    return alarmCode
+                if line == b"":
+                    return "timeout"
+        finally:
+            self.timeout = originalTimeout
+
+    def getPinState(self):
+        # Returns the triggered-input letters from the status report's Pn: field,
+        # e.g. "XY" if both those limit inputs are active, "" if nothing is triggered.
+        # Note: stock Grbl shares one pin per axis, so "X" means *a* switch on X —
+        # it cannot distinguish the min switch from the max switch.
+        report = parseStatusReport(self.getStatus() or "")
+        return report['fields'].get('Pn', "") if report else ""
+
+    def runHomingCycle(self, homingPosition=None):
+        if homingPosition is None:
+            homingPosition = self.homingPosition  # from the profile, or bottomLeftZUp
         self.homingPosition = homingPosition
         self.send('$23=' + homingPosition)
         self.send('$H')  # This does not need a sendAndWait() in order for self.getMachineCoordinates() to succeed, because $H is fully synchronous already.
@@ -736,201 +911,124 @@ if __name__ == "__main__":
     except ValueError as valueError:
         assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
 
-    # Point tests
-    # GrblController.Point class is effectively an alias for Grbl.Vector
-    # All the tests below are derived from the Vector tests above, substituting the word Point for Vector
-    # tuple Tests
+    # MachineProfile verify/apply tests — exercise _verifyProfileSettings without a
+    # serial port by stubbing out getSettings()/send() on an uninitialized instance.
+    class FakeGrbl(GrblController):
+        def __init__(self, machineSettings, profile):  # deliberately no super().__init__()
+            self.machineSettings = dict(machineSettings)
+            self.profile = profile
+            self.sent = []
+
+        def getSettings(self):
+            return dict(self.machineSettings)
+
+        def send(self, gcode):
+            self.sent.append(gcode)
+            key, _, value = gcode.partition('=')
+            self.machineSettings[key] = value
+
+    profile = MachineProfile(name="test", expectedSettings={"$3": "0", "$23": "3", "$110": "500.000"})
+
+    # All settings already correct: no warning, no error, nothing sent
+    fake = FakeGrbl({"$3": "0", "$23": "3", "$110": "500.000"}, profile)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fake._verifyProfileSettings(applySettings=False)
+    assert fake.sent == []
+
+    # Non-critical mismatch: warns, does not raise
+    fake = FakeGrbl({"$3": "0", "$23": "3", "$110": "999.000"}, profile)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fake._verifyProfileSettings(applySettings=False)
+    assert len(caught) == 1 and "$110" in str(caught[0].message)
+
+    # Critical mismatch ($23 wrong): hard error, nothing sent
+    fake = FakeGrbl({"$3": "0", "$23": "0", "$110": "500.000"}, profile)
     try:
-        thing = GrblController.Point(())
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+        fake._verifyProfileSettings(applySettings=False)
+        assert False, "expected RuntimeError for critical mismatch"
+    except RuntimeError as runtimeError:
+        assert "$23" in str(runtimeError) and "applySettings=True" in str(runtimeError)
+    assert fake.sent == []
 
-    thing = GrblController.Point((1,))
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, None, None)'
+    # Critical mismatch with applySettings=True: corrected and no error
+    fake = FakeGrbl({"$3": "0", "$23": "0", "$110": "500.000"}, profile)
+    fake._verifyProfileSettings(applySettings=True)
+    assert fake.sent == ["$23=3"]
+    assert fake.machineSettings["$23"] == "3"
 
-    thing = GrblController.Point((1, 2,))
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, None)'
-
-    thing = GrblController.Point((1, 2, 3,))
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, 3.0)'
-
+    # Setting missing entirely from the machine (reports as None): critical path
+    fake = FakeGrbl({"$23": "3", "$110": "500.000"}, profile)
     try:
-        thing = GrblController.Point((1, 2, 3, 4))
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+        fake._verifyProfileSettings(applySettings=False)
+        assert False, "expected RuntimeError for missing critical setting"
+    except RuntimeError as runtimeError:
+        assert "$3" in str(runtimeError)
 
+    # applySettings that doesn't take (send succeeds but value stays wrong): still raises
+    class StubbornFakeGrbl(FakeGrbl):
+        def send(self, gcode):
+            self.sent.append(gcode)  # pretend to accept, change nothing
+
+    fake = StubbornFakeGrbl({"$3": "0", "$23": "0", "$110": "500.000"}, profile)
     try:
-        thing = GrblController.Point((1, 2, 3, 4, 5))
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+        fake._verifyProfileSettings(applySettings=True)
+        assert False, "expected RuntimeError when applying fails"
+    except RuntimeError as runtimeError:
+        assert "Applying them failed" in str(runtimeError)
 
-    try:
-        thing = GrblController.Point((1, 2, 3, 4, 5, 6))
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+    # MachineProfile JSON round-trip tests
+    import tempfile
+    import os
 
-    try:
-        thing = GrblController.Point((1,), (2,))
-        if debug:
-            print(thing)
-    except TypeError as typeError:
-        assert typeError.args[0] == "float() argument must be a string or a real number, not 'tuple'"
+    original = MachineProfile(
+        name="roundtrip", workAreaX=300.0, workAreaY=180.0, workAreaZ=45.0,
+        expectedSettings={"$23": "3"}, firmwareVersion="1.1h", calibratedOn="2026-11-18",
+        settingsSnapshot={"$0": "10", "$23": "3"},
+        homeableCorners={"0": True, "3": True}, switchesVerified={"X": True, "Y": True})
+    with tempfile.TemporaryDirectory() as tempDir:
+        path = os.path.join(tempDir, "roundtrip.json")
+        original.save(path)
+        loaded = MachineProfile.load(path)
+        assert loaded == original
 
-    # list Tests
-    try:
-        thing = GrblController.Point([])
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+        # A file from a newer schema (extra field) loads with a warning, not an error
+        with open(path) as jsonFile:
+            data = json.load(jsonFile)
+        data["futureField"] = "whatever"
+        with open(path, 'w') as jsonFile:
+            json.dump(data, jsonFile)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loaded = MachineProfile.load(path)
+        assert loaded == original
+        assert len(caught) == 1 and "futureField" in str(caught[0].message)
 
-    thing = GrblController.Point([1])
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, None, None)'
+    # getPinState parsing (stub getStatus; no serial port involved)
+    class PinFakeGrbl(FakeGrbl):
+        statusReport = None
 
-    thing = GrblController.Point([1, 2])
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, None)'
+        def getStatus(self, debug=False):
+            return self.statusReport
 
-    thing = GrblController.Point([1, 2, 3])
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, 3.0)'
+    fake = PinFakeGrbl({}, profile)
+    fake.statusReport = '<Idle|MPos:0.000,0.000,0.000|Pn:XY|FS:0,0>\r\n'
+    assert fake.getPinState() == "XY"
+    fake.statusReport = '<Idle|MPos:0.000,0.000,0.000|Pn:Z>\r\n'
+    assert fake.getPinState() == "Z"
+    fake.statusReport = '<Idle|MPos:0.000,0.000,0.000|FS:0,0>\r\n'
+    assert fake.getPinState() == ""
+    fake.statusReport = None
+    assert fake.getPinState() == ""
 
-    try:
-        thing = GrblController.Point([1, 2, 3, 4])
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
+    # getGrblState parsing
+    fake.statusReport = '<Idle|MPos:0.000,0.000,0.000|FS:0,0>\r\n'
+    assert fake.getGrblState() == "Idle"
+    fake.statusReport = '<Alarm|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0|WCO:-405.000,-299.000,-84.000>\r\n'
+    assert fake.getGrblState() == "Alarm"
+    fake.statusReport = '<Hold:0|MPos:-10.000,-5.000,0.000|FS:0,0>\r\n'
+    assert fake.getGrblState() == "Hold"
+    fake.statusReport = None
+    assert fake.getGrblState() is None
 
-    try:
-        thing = GrblController.Point([1, 2, 3, 4, 5])
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    try:
-        thing = GrblController.Point([1, 2, 3, 4, 5, 6])
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    try:
-        thing = GrblController.Point([1], [2])
-        if debug:
-            print(thing)
-    except TypeError as typeError:
-        assert typeError.args[0] == "float() argument must be a string or a real number, not 'list'"
-
-    # positional argument tests
-    try:
-        thing = GrblController.Point()
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    thing = GrblController.Point(1)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, None, None)'
-
-    thing = GrblController.Point(1, 2)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, None)'
-
-    thing = GrblController.Point(1, 2, 3)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, 3.0)'
-
-    try:
-        thing = GrblController.Point(1, 2, 3, 4)
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    try:
-        thing = GrblController.Point(1, 2, 3, 4, 5)
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    try:
-        thing = GrblController.Point(1, 2, 3, 4, 5, 6)
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    # keyword argument tests
-    try:
-        thing = GrblController.Point(junk=3)
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
-
-    thing = GrblController.Point(x=1)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, None, None)'
-
-    thing = GrblController.Point(y=2)
-    if debug:
-        print(thing)
-    assert str(thing) == '(None, 2.0, None)'
-
-    thing = GrblController.Point(z=3)
-    if debug:
-        print(thing)
-    assert str(thing) == '(None, None, 3.0)'
-
-    thing = GrblController.Point(x=1, y=2)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, None)'
-
-    thing = GrblController.Point(x=1, z=3)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, None, 3.0)'
-
-    thing = GrblController.Point(y=2, z=3)
-    if debug:
-        print(thing)
-    assert str(thing) == '(None, 2.0, 3.0)'
-
-    thing = GrblController.Point(x=1, y=2, z=3)
-    if debug:
-        print(thing)
-    assert str(thing) == '(1.0, 2.0, 3.0)'
-
-    try:
-        thing = GrblController.Point(x=1, junk=3)
-        if debug:
-            print(thing)
-    except ValueError as valueError:
-        assert valueError.args[0] == "Either provide a list/tuple or named arguments including at least one of 'x', 'y', or 'z'"
