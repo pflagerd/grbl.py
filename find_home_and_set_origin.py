@@ -94,8 +94,8 @@ def find_home_and_set_origin(corner=bottom_left_z_up):
         if line == b"ok\r\n":
             break
 
-    print("sending S1000\\n")  # Set the default spindle speed to maximum
-    grblController.write(b'S1000\n')
+    print("sending S10000\\n")  # Set the default spindle speed to maximum
+    grblController.write(b'S10000\n')
     while True:
         line = grblController.readline()
         print(str(line))
