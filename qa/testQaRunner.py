@@ -20,6 +20,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import evidence  # noqa: E402
 import qaRunner  # noqa: E402
 import qa_calibrate  # noqa: E402
 import qa_jog  # noqa: E402
@@ -131,12 +132,12 @@ class AnswerTests(RunnerTestCase):
         self.assertEqual(session["answers"]["B1"], {**session["answers"]["B1"],
                                                      "result": "skip", "note": ""})
         # The skip note was asked for (and left empty); a fail note never is with inline text.
-        self.assertIn("Why skip? (Enter for none) ", self.script.prompts)
+        self.assertIn(qaRunner.BODY + "Why skip? (Enter for none) ", self.script.prompts)
 
     def testFailInsistsOnANote(self):
         session = self.run_(["", "f", "", "   ", "the real note", "q"])
         self.assertEqual(session["answers"]["A1"]["note"], "the real note")
-        self.assertEqual(self.script.prompts.count("What went wrong? (a short note) "), 3)
+        self.assertEqual(self.script.prompts.count(qaRunner.BODY + "What went wrong? (a short note) "), 3)
 
     def testNoteBeforeAnswering(self):
         session = self.run_(["", "n", "coasted 15 mm", "p", "n second note", "s", "q"])
@@ -146,13 +147,177 @@ class AnswerTests(RunnerTestCase):
     def testUnknownAnswerShowsHelpAndAsksAgain(self):
         session = self.run_(["", "x", "", "p", "q"])
         self.assertEqual(self.answers(session)["A1"], ("pass", ""))
-        self.assertEqual(self.text().count("p = pass (\"p text\" adds a note)"), 2)
+        self.assertEqual(" ".join(self.text().split()).count(qaRunner.FIRST_ITEM_HELP), 2)
+
+    def testOpeningStatesThePurposeThenTheFile(self):
+        checklist = dict(CHECKLIST, program="demo.py", purpose="demo.py guides you.")
+        self.run_(["", "q"], checklist=checklist)
+        lines = self.text().splitlines()
+        self.assertEqual(lines[:3], ["(demo.py) S1:", "", "    demo.py guides you."])
+        save = lines.index("    demo.py will save your responses and any relevant data to the "
+                           "file:")
+        self.assertTrue(lines[save + 2].strip().endswith(".md"))
+        notice = " ".join(" ".join(lines).split())
+        self.assertIn(qaRunner.STEP_NOTICE.format(label="(demo.py) S1"), notice)
+        self.assertIn("Notice that this step is labelled (demo.py) S1. S stands for step.", notice)
+        self.assertLess(save, next(i for i, line in enumerate(lines) if "Notice that" in line))
+        self.assertEqual(self.script.prompts[0], qaRunner.START_PROMPT)
+        self.assertEqual(self.script.prompts[1], qaRunner.FIRST_SECTION_PROMPT)
+
+    def testLabelNamesTheProgram(self):
+        plain = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=lambda *a: None)
+        self.assertEqual(plain.label("A1", 0), "S1:")
+        named = qaRunner.Runner(dict(CHECKLIST, program="demo.py"), resultsDir=self.directory,
+                                out=lambda *a: None)
+        self.assertEqual(named.label("A1", 0), "(demo.py) S1:")
+        self.assertEqual(named.label("A2", 0), "(demo.py) S2:")
+
+    def testShortPath(self):
+        home = os.path.expanduser("~")
+        self.assertEqual(qaRunner.shortPath(os.path.join(home, "a", "b.md")),
+                         os.path.join("~", "a", "b.md"))
+        self.assertEqual(qaRunner.shortPath("/elsewhere/b.md"), "/elsewhere/b.md")
+
+    def stepChecklist(self, steps, **item):
+        return {"name": "st", "title": "Steps", "sections": [{"title": "S", "items": [
+            dict({"id": "S1", "title": "s", "steps": steps}, **item)]}]}
+
+    def testStepsComeOneAtATime(self):
+        checklist = self.stepChecklist([
+            {"do": "Please start beta.", "run": "python b.py", "expect": "Beta starts."},
+            {"do": "Please stop beta.", "actions": ["Hold X.", "Press Enter."],
+             "expect": "Beta stops."}])
+        outputs = []
+        self.run_(["", "", "p", "q"], checklist=checklist,
+                  onAsk=lambda prompt: outputs.append(len(self.output)))
+        lines = self.text().splitlines()
+        first = lines.index("S1:")
+        self.assertEqual(lines[first + 1:first + 3], ["", "    Please start beta."])
+        self.assertIn("S2:", lines)   # every step has its own number
+        self.assertIn("        python b.py", lines)
+        self.assertIn("    You should see: Beta starts.", lines)
+        self.assertIn("       1. Hold X.", lines)
+        self.assertIn("       2. Press Enter.", lines)
+        # Step 2 is shown only after Enter at step 1; no Enter after the last step.
+        self.assertEqual(self.script.prompts[1], qaRunner.CONTINUE_PROMPT)
+        shownBefore = "\n".join(self.output[:outputs[1]])
+        self.assertNotIn("Please stop beta.", shownBefore)
+        self.assertTrue(self.script.prompts[2].startswith(qaRunner.BODY + "How did it go?"))
+        self.assertEqual(self.answers(self.loadJson())["S1"], ("pass", ""))
+
+    def testAStepAlreadyDoneIsSkipped(self):
+        checklist = self.stepChecklist([
+            {"do": "Please open a console.", "already": lambda: (True, "It's open.")},
+            {"do": "Please run it.", "expect": "It runs."}])
+        self.run_(["", "p", "q"], checklist=checklist)
+        self.assertIn("S1: already done. It's open.", self.text().splitlines())
+        self.assertNotIn("Please open a console.", self.text())
+        self.assertNotIn(qaRunner.CONTINUE_PROMPT, self.script.prompts)
+
+    def testVerifyAsksAgainUntilDoneOrCarryOn(self):
+        results = iter([(False, "Not yet."), (True, "Found it.")])
+        checklist = self.stepChecklist([
+            {"do": "Please install it.", "verify": lambda: next(results)}])
+        self.run_(["", "", "", "p", "q"], checklist=checklist)
+        lines = self.text().splitlines()
+        self.assertIn("    Not yet.", lines)
+        self.assertIn("    Found it.", lines)
+        self.assertEqual(self.script.prompts[1:3], [qaRunner.CONTINUE_PROMPT,
+                                                    qaRunner.RECHECK_PROMPT])
+        never = self.stepChecklist([{"do": "Please do it.",
+                                     "verify": lambda: (False, "Not yet.")}])
+        self.run_(["", "", "c", "p", "q"], checklist=never)
+        self.assertEqual(self.answers(self.loadJson())["S1"], ("pass", ""))
+
+    def testSkipIfAndAutoAnswerWithoutAsking(self):
+        checklist = {"name": "sk", "title": "Skips", "sections": [{"title": "S", "items": [
+            {"id": "K1", "title": "k", "auto": lambda: ("pass", "All in place.")},
+            {"id": "K2", "title": "k", "skipIf": lambda: "It's installed already.",
+             "steps": [{"do": "Please install it."}]},
+            {"id": "K3", "title": "k", "skipIf": lambda: None,
+             "steps": [{"do": "Please look."}]}]}]}
+        self.run_(["", "p", "q"], checklist=checklist)
+        answers = self.answers(self.loadJson())
+        self.assertEqual(answers["K1"], ("pass", "All in place."))
+        self.assertEqual(answers["K2"], ("skip", "It's installed already."))
+        self.assertEqual(answers["K3"], ("pass", ""))
+        text = " ".join(self.text().split())
+        self.assertIn("S1: checked for you. All in place. I've recorded this test as passed.", text)
+        self.assertIn("S2: not needed. It's installed already. I've recorded this test as "
+                      "skipped.", text)
+        self.assertIn("S3: Please look.", text)
+        self.assertNotIn("Please install it.", text)
+
+    def testDoneStepsStayTogether(self):
+        checklist = dict(CHECKLIST, intro=[
+            {"do": "Please open a console.", "already": lambda: (True, "It's open.")},
+            {"do": "Please go there.", "already": lambda: (True, "It's there.")},
+            {"do": "Please read this."}])
+        self.run_(["", "q"], checklist=checklist)
+        lines = self.text().splitlines()
+        first = lines.index("S1: already done. It's open.")
+        # A blank line after each report.
+        self.assertEqual(lines[first + 1:first + 4], ["", "S2: already done. It's there.", ""])
+        self.assertNotEqual(lines[first + 4], "")   # and not two in a row
+        third = lines.index("S3:")
+        self.assertEqual(lines[third + 1:third + 3], ["", "    Please read this."])
+        self.assertNotIn("move on", self.text())
+
+    def testNoBlankLineAtTheTopOfAScreen(self):
+        self.output = []
+        runner = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=self.output.append,
+                                 styled=True)
+        runner.clearScreen()
+        runner.gap()
+        runner.out("text")
+        runner.gap()
+        runner.gap()
+        self.assertEqual(self.output, [qaRunner.CLEAR, "text", ""])
+
+    def testIntroStepsAndAgainOnResume(self):
+        checklist = dict(CHECKLIST, intro=[
+            {"do": "Please open a second console.", "again": True},
+            {"do": "Please read the safety notes."}])
+        self.run_(["", "", "", "p", "q"], checklist=checklist)
+        self.assertEqual(self.script.prompts[:2], [qaRunner.CONTINUE_PROMPT] * 2)
+        self.run_(["", "", "", "q"], checklist=checklist)  # resume
+        text = self.text()
+        self.assertIn("S1:\n\n    Please open a second console.", text)
+        self.assertNotIn("Please read the safety notes.", text)
+
+    def testCommandsAreNotWrapped(self):
+        command = "python " + "x" * 100
+        checklist = {"name": "w", "title": "W", "sections": [{"title": "S", "items": [
+            {"id": "W1", "title": "w", "steps": [{"do": "d", "run": command, "expect": "e"}]}]}]}
+        self.run_(["", "q"], checklist=checklist)
+        self.assertIn(qaRunner.BODY + "    " + command, self.text().splitlines())
+
+    def testChecklistsUseSteps(self):
+        for checklist in (qa_jog.CHECKLIST, qa_calibrate.CHECKLIST):
+            for _, item in qaRunner.flatten(checklist):
+                self.assertTrue("steps" in item or "auto" in item, item["id"])
+
+    def testReferencesBecomeStepNumbers(self):
+        checklist = {"name": "r", "title": "R", "sections": [{"title": "S", "items": [
+            {"id": "X1", "title": "x", "steps": [{"do": "a"}, {"do": "b"}]},
+            {"id": "X2", "title": "y", "steps": [{"do": "As in [[X1]]."}]}]}]}
+        self.run_(["", "", "p", "q"], checklist=checklist)
+        self.assertIn("    As in S1-S2.", self.text().splitlines())
+        bad = {"name": "b", "title": "B", "sections": [{"title": "S", "items": [
+            {"id": "Y1", "title": "y", "steps": [{"do": "As in [[NOPE]]."}]}]}]}
+        self.assertIn("Y1 refers to an unknown item [[NOPE]]", qaRunner.checklistProblems(bad))
+
+    def testStepNumbersAreStable(self):
+        numbers = qaRunner.numberSteps(qa_jog.CHECKLIST)
+        self.assertEqual(numbers[("opening", 0)], 1)
+        self.assertEqual(numbers[("intro", 0)], 2)
+        self.assertEqual(sorted(numbers.values()), list(range(1, len(numbers) + 1)))
 
     def testItemDisplay(self):
         self.run_(["", "q"])
         text = self.text()
-        for expected in ("[1/5] A1  Alpha", "Do:", "Do alpha.", "Run:", "python a.py",
-                         "Expect:", "Alpha happens.", "Section 1 of 3: First (2 items)"):
+        for expected in ("Alpha   (First)", "S1:", "  Do alpha.", "    python a.py",
+                         "  You should see: Alpha happens.", "Section 1 of 3: First (2 items)"):
             self.assertIn(expected, text)
 
 
@@ -166,7 +331,8 @@ class BackTests(RunnerTestCase):
     def testEnterKeepsThePreviousAnswerAfterBack(self):
         session = self.run_(["", "p first", "b", "", "s", "", "q"])
         self.assertEqual(self.answers(session)["A1"], ("pass", "first"))
-        self.assertIn("(Enter keeps pass) " + qaRunner.ITEM_PROMPT, self.script.prompts)
+        self.assertIn(qaRunner.BODY + "(Enter keeps pass) " + qaRunner.FIRST_ITEM_PROMPT,
+                      self.script.prompts)
 
     def testBackAcrossASectionBoundary(self):
         session = self.run_(["", "p", "p", "", "b", "f redo", "", "q"])
@@ -179,9 +345,18 @@ class BackTests(RunnerTestCase):
         self.assertEqual(self.answers(session)["A2"], ("skip", "skipped"))
 
     def testBackAtTheFirstItem(self):
+        # The very first prompts don't offer [b]ack; typing b there just shows the help.
         session = self.run_(["b", "", "b", "p", "q"])
         self.assertEqual(self.answers(session)["A1"], ("pass", ""))
-        self.assertEqual(self.text().count("This is the first item"), 2)
+        self.assertEqual(self.script.prompts[0], qaRunner.FIRST_SECTION_PROMPT)
+        self.assertEqual(self.script.prompts[2], qaRunner.BODY + qaRunner.FIRST_ITEM_PROMPT)
+        self.assertNotIn("[b]ack", self.script.prompts[0] + self.script.prompts[2])
+        self.assertIn(qaRunner.FIRST_SECTION_HELP, self.text())
+        self.assertIn(qaRunner.FIRST_ITEM_HELP, " ".join(self.text().split()))
+        self.assertNotIn("go back", qaRunner.FIRST_SECTION_HELP)
+        self.assertNotIn("back", qaRunner.FIRST_ITEM_HELP)
+        # Later prompts still offer it.
+        self.assertIn("[b]ack", self.script.prompts[4])
 
     def testNoteOnAnAnsweredItemIsSavedAtOnce(self):
         self.run_(["", "p", "b", "n added later", "q"])
@@ -227,7 +402,7 @@ class QuitResumeTests(RunnerTestCase):
 
         second = self.run_(["", "", "p", "p", "", "p"])  # Enter = yes, resume
         self.assertEqual(self.runner.basePath, basePath)
-        self.assertIn("Resume it? [Y/n] ", self.script.prompts)
+        self.assertIn(qaRunner.BODY + "Resume it? [Y/n] ", self.script.prompts)
         self.assertIn("2 of 5 answered", " ".join(self.text().split()))
         self.assertEqual(self.answers(second)["A2"], ("fail", "bad"))
         self.assertEqual(self.answers(second)["C1"], ("pass", ""))
@@ -237,7 +412,7 @@ class QuitResumeTests(RunnerTestCase):
     def testResumeMidSectionStartsAtTheFirstUnansweredItem(self):
         self.run_(["", "p", "q"])
         self.run_(["y", "q"])
-        self.assertIn("[2/5] A2", self.text())
+        self.assertIn("Beta | pipe   (First)\n\nS2:", self.text())
         self.assertNotIn("Section 1 of 3", self.text())
 
     def testDecliningResumeStartsANewFile(self):
@@ -251,13 +426,13 @@ class QuitResumeTests(RunnerTestCase):
     def testFinishedSessionsAreNotOffered(self):
         self.run_(["", "p", "p", "", "p", "p", "", "p"])
         self.run_(["q"])
-        self.assertNotIn("Resume it? [Y/n] ", self.script.prompts)
+        self.assertNotIn(qaRunner.BODY + "Resume it? [Y/n] ", self.script.prompts)
 
     def testOtherChecklistsAreNotOffered(self):
         other = dict(CHECKLIST, name="other")
         self.run_(["", "p", "q"], checklist=other)
         self.run_(["q"])
-        self.assertNotIn("Resume it? [Y/n] ", self.script.prompts)
+        self.assertNotIn(qaRunner.BODY + "Resume it? [Y/n] ", self.script.prompts)
 
     def testTheMostRecentUnfinishedSessionIsOffered(self):
         self.run_(["", "p", "q"])
@@ -269,7 +444,7 @@ class QuitResumeTests(RunnerTestCase):
     def testNewFlagDoesNotOfferResume(self):
         self.run_(["", "p", "q"])
         self.run_(["q"], offerResume=False)
-        self.assertNotIn("Resume it? [Y/n] ", self.script.prompts)
+        self.assertNotIn(qaRunner.BODY + "Resume it? [Y/n] ", self.script.prompts)
 
     def testEndOfInputSavesAndQuits(self):
         session = self.run_(["", "p", "f", "broken"])  # then EOF at A3's prompt
@@ -356,8 +531,8 @@ class OutputTests(RunnerTestCase):
         self.assertIn("All items answered.", text)
         self.assertIn("Pass 2, fail 2, skip 1.", text)
         self.assertIn("Failed:", text)
-        self.assertIn("A2  Beta | pipe: the | pipe\\ note", text)
-        self.assertIn("C1  Epsilon: again", text)
+        self.assertIn("S2  Beta | pipe: the | pipe\\ note", text)
+        self.assertIn("S5  Epsilon: again", text)
 
     def testSummaryAfterQuitCountsUnanswered(self):
         self.run_(["", "p", "q"])
@@ -370,11 +545,11 @@ class OutputTests(RunnerTestCase):
                          "- Machine profile: Test Machine", "- Git commit: `abc1234`",
                          "- Started: 2026-11-24 09:30:01", "- Status: finished",
                          "Pass 2, fail 2, skip 1, not answered 0.",
-                         "### Failed", "- **C1** Epsilon: again",
-                         "## First", "| ID | Check | Result | Note |",
-                         "| A1 | Alpha | pass |  |",
-                         "| A2 | Beta \\| pipe | fail | the \\| pipe\\\\ note |",
-                         "## Second", "| B1 | Gamma | skip | no plate |", "## Third"):
+                         "### Failed", "- **S5** (C1) Epsilon: again",
+                         "## First", "| Steps | ID | Check | Result | Note |",
+                         "| S1 | A1 | Alpha | pass |  |",
+                         "| S2 | A2 | Beta \\| pipe | fail | the \\| pipe\\\\ note |",
+                         "## Second", "| S3 | B1 | Gamma | skip | no plate |", "## Third"):
             self.assertIn(expected, markdown)
 
     def testMarkdownWhileUnfinished(self):
@@ -392,7 +567,7 @@ class OutputTests(RunnerTestCase):
         self.assertEqual(saved["commit"], "abc1234")
         self.assertTrue(saved["finished"])
         self.assertEqual([item["id"] for item in saved["items"]], ["A1", "A2", "B1", "B2", "C1"])
-        self.assertEqual(saved["items"][1], {"id": "A2", "section": "First", "title": "Beta | pipe",
+        self.assertEqual(saved["items"][1], {"id": "A2", "steps": "S2", "section": "First", "title": "Beta | pipe",
                                              "result": "fail", "note": "the | pipe\\ note",
                                              "answered": saved["answers"]["A2"]["answered"]})
         self.assertEqual(saved["items"][2]["section"], "Second")
@@ -400,6 +575,242 @@ class OutputTests(RunnerTestCase):
     def testMachineOverride(self):
         self.run_(["q"], machine="4030 ProverXL V2")
         self.assertEqual(self.loadJson()["machine"], "4030 ProverXL V2")
+
+
+class EvidenceTests(unittest.TestCase):
+    """evidence.py against a fake /proc."""
+
+    def setUp(self):
+        self.proc = tempfile.mkdtemp(prefix="qaProc-")
+        self.addCleanup(shutil.rmtree, self.proc)
+        self.repo = tempfile.mkdtemp(prefix="qaRepo-")
+        self.addCleanup(shutil.rmtree, self.repo)
+
+    def process(self, pid, comm, tty, cwd):
+        directory = os.path.join(self.proc, str(pid))
+        os.makedirs(directory)
+        with open(os.path.join(directory, "stat"), "w", encoding="utf-8") as file:
+            file.write(f"{pid} ({comm}) S 1 {pid} {pid} {tty} {pid} 0 0\n")
+        os.symlink(cwd, os.path.join(directory, "cwd"))
+
+    def testOtherShells(self):
+        self.process(100, "bash", 34816, "/")          # this console
+        self.process(101, "bash", 34817, self.repo)    # the second console
+        self.process(102, "python3", 34818, self.repo)  # not a shell
+        self.process(103, "bash", 0, self.repo)        # no terminal
+        shells = evidence.otherShells(self.proc, tty=34816)
+        self.assertEqual([shell["pid"] for shell in shells], [101])
+
+    def testSecondConsoleChecks(self):
+        self.process(101, "zsh", 34817, "/")
+        tty = 34816
+        original = evidence.ownTty
+        evidence.ownTty = lambda proc="/proc": tty
+        self.addCleanup(setattr, evidence, "ownTty", original)
+        self.assertTrue(evidence.secondConsole(self.proc)[0])
+        self.assertFalse(evidence.secondConsoleIn(self.repo, self.proc)[0])
+        os.makedirs(os.path.join(self.proc, "201"))
+        self.process(202, "bash", 34818, self.repo)
+        done, message = evidence.secondConsoleIn(self.repo, self.proc)
+        self.assertTrue(done)
+        self.assertIn(os.path.realpath(self.repo), message)
+
+    def testNoSecondConsole(self):
+        self.process(100, "bash", 34816, "/")
+        self.assertEqual(evidence.otherShells(self.proc, tty=34816), [])
+
+    def testCanImport(self):
+        self.assertTrue(evidence.canImport(sys.executable, "json"))
+        self.assertFalse(evidence.canImport(sys.executable, "no_such_module_qa"))
+        self.assertFalse(evidence.canImport("/no/such/python", "json"))
+
+    def testGroups(self):
+        self.assertFalse(evidence.listedInGroup("no-such-group-qa"))
+        self.assertFalse(evidence.inGroupNow("no-such-group-qa"))
+
+
+class StyleTests(RunnerTestCase):
+    def checklist(self):
+        return dict(CHECKLIST, program="demo.py", purpose="demo.py guides you.", sections=[
+            {"title": "S", "items": [{"id": "S1", "title": "s", "steps": [
+                {"do": "Please start it.", "expect": "It starts."},
+                {"do": "Please stop it."}]}]}])
+
+    def testPlainUnlessATerminal(self):
+        self.run_(["", "", "", "p", "q"], checklist=self.checklist())
+        everything = self.text() + "".join(self.script.prompts)
+        self.assertNotIn("\033", everything)
+
+    def testStyledOnATerminal(self):
+        checklist = self.checklist()
+        checklist["intro"] = [{"do": "Please open it.", "already": lambda: (True, "It's open.")}]
+        checklist["sections"][0]["items"][0]["safety"] = "Hand near reset."
+        with mock.patch.dict(sys.modules, {"readline": None}):
+            del sys.modules["readline"]
+            self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True)
+        out = self.output
+        self.assertEqual(out[0], qaRunner.CLEAR)               # a fresh screen to start
+        self.assertIn("(demo.py) S3:", out)                  # headings and steps are plain
+        self.assertIn("    Please start it.", out)
+        self.assertIn("    You should see: It starts.", out)
+
+        def screenWith(text):
+            starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR]
+            at = out.index(text)
+            return out[max(i for i in starts if i < at):]
+        # A done step opens the next screen, so it stays in view with the next prompt.
+        self.assertIn("(demo.py) S2: already done. It's open.", screenWith(
+            "Section 1 of 1: S (1 item)"))
+        # Every step starts a fresh screen once the one before was answered, and
+        # a later step of a test repeats the test's title and safety note.
+        second = screenWith("(demo.py) S4:")
+        self.assertNotIn("(demo.py) S3:", second)
+        self.assertIn("s   (S)", second)
+        self.assertIn("  Safety: Hand near reset.", second)
+        # Nothing else is styled, prompts included.
+        everything = "".join(line for line in out if line != qaRunner.CLEAR) + \
+            "".join(self.script.prompts)
+        self.assertNotIn("\033", everything)
+        self.assertIn(qaRunner.CONTINUE_PROMPT, self.script.prompts)
+        self.assertIn(qaRunner.START_PROMPT, self.script.prompts)
+
+    def testPromptsArePlain(self):
+        runner = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=lambda *a: None,
+                                 styled=True)
+        self.assertEqual(runner.promptStyle("  Press Enter. "), "  Press Enter. ")
+
+    def testUseStyle(self):
+        class Stream:
+            def __init__(self, tty):
+                self.tty = tty
+
+            def isatty(self):
+                return self.tty
+        with mock.patch.dict(os.environ, {"TERM": "xterm"}, clear=True):
+            self.assertTrue(qaRunner.useStyle(Stream(True)))
+            self.assertFalse(qaRunner.useStyle(Stream(False)))
+        with mock.patch.dict(os.environ, {"TERM": "dumb"}, clear=True):
+            self.assertFalse(qaRunner.useStyle(Stream(True)))
+        with mock.patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": ""}, clear=True):
+            self.assertFalse(qaRunner.useStyle(Stream(True)))
+
+
+class KeyTests(unittest.TestCase):
+    """The "Press Enter ..." prompts react to single keys on a terminal."""
+
+    def runner(self):
+        directory = tempfile.mkdtemp(prefix="qaKeys-")
+        self.addCleanup(shutil.rmtree, directory)
+        return qaRunner.Runner(CHECKLIST, resultsDir=directory, out=lambda *a: None,
+                               styled=False)
+
+    def keys(self, *pressed):
+        return mock.patch.multiple(qaRunner, keyboardIsTerminal=lambda: True,
+                                   readKey=mock.Mock(side_effect=list(pressed)))
+
+    def testQQuitsWithoutEnter(self):
+        with self.keys("q"), redirect_stdout(io.StringIO()) as shown:
+            with self.assertRaises(qaRunner.Quit):
+                answer = self.runner().askKey(qaRunner.START_PROMPT)
+                if answer == "q":
+                    raise qaRunner.Quit()
+        self.assertTrue(shown.getvalue().startswith(qaRunner.START_PROMPT))
+
+    def testEnterAndIgnoredKeys(self):
+        with self.keys("x", qaRunner.KEY_SEQUENCE, "\r"), redirect_stdout(io.StringIO()):
+            self.assertEqual(self.runner().askKey(qaRunner.CONTINUE_PROMPT), "")
+        with self.keys("x", "C"), redirect_stdout(io.StringIO()):
+            self.assertEqual(self.runner().askKey(qaRunner.RECHECK_PROMPT, ("q", "c")), "c")
+
+    def testEscQuitsButArrowsDont(self):
+        with self.keys(qaRunner.ESC), redirect_stdout(io.StringIO()):
+            self.assertEqual(self.runner().askKey(qaRunner.CONTINUE_PROMPT), "q")
+        with self.keys(qaRunner.KEY_SEQUENCE, "\r"), redirect_stdout(io.StringIO()):
+            self.assertEqual(self.runner().askKey(qaRunner.CONTINUE_PROMPT), "")
+
+    def testCtrlCAndCtrlDQuit(self):
+        for key in ("\x03", "\x04"):
+            with self.keys(key), redirect_stdout(io.StringIO()):
+                with self.assertRaises(qaRunner.Quit):
+                    self.runner().askKey(qaRunner.CONTINUE_PROMPT)
+
+    def testAnswerPromptTakesSingleKeys(self):
+        with mock.patch.multiple(qaRunner, keyboardIsTerminal=lambda: True,
+                                 readKey=mock.Mock(side_effect=["x", "p"])), \
+                redirect_stdout(io.StringIO()) as shown:
+            runner = self.runner()
+            self.assertEqual(runner.choose(qaRunner.ITEM_PROMPT, qaRunner.ITEM_WORDS),
+                             ("p", ""))
+        self.assertNotIn("\033", shown.getvalue())   # answer prompts aren't highlighted
+        with mock.patch.multiple(qaRunner, keyboardIsTerminal=lambda: True,
+                                 readKey=mock.Mock(side_effect=["b", qaRunner.ESC])), \
+                redirect_stdout(io.StringIO()):
+            # b isn't allowed at the first item; Esc quits.
+            self.assertEqual(self.runner().choose(qaRunner.FIRST_ITEM_PROMPT,
+                                                  qaRunner.ITEM_WORDS, ("p", "q")), ("q", ""))
+
+    def testLinesWhenNotATerminal(self):
+        with mock.patch.object(qaRunner, "keyboardIsTerminal", lambda: False), \
+                mock.patch("builtins.input", lambda prompt: " Q "):
+            self.assertEqual(self.runner().askKey(qaRunner.CONTINUE_PROMPT), "q")
+
+
+class CalibrateEvidenceTests(unittest.TestCase):
+    """qa_calibrate's checks against a temporary profiles folder."""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="qaCal-")
+        self.addCleanup(shutil.rmtree, self.repo)
+        os.makedirs(os.path.join(self.repo, "profiles"))
+        patcher = mock.patch.object(qa_calibrate, "REPO", self.repo)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, relative, data):
+        with open(os.path.join(self.repo, relative), "w", encoding="utf-8") as file:
+            json.dump(data, file)
+
+    def testCalibratedToday(self):
+        self.write(qa_calibrate.PROFILE, {"calibratedOn": "2020-01-01"})
+        self.assertFalse(qa_calibrate.calibratedToday()[0])
+        self.write(qa_calibrate.PROFILE, {"calibratedOn": qa_calibrate.today()})
+        self.assertTrue(qa_calibrate.calibratedToday()[0])
+
+    def testPlateThicknessSaved(self):
+        self.assertFalse(qa_calibrate.plateThicknessSaved()[0])   # no sidecar yet
+        self.write(qa_calibrate.SIDECAR, {"plateThickness": qa_calibrate.PLATE})
+        self.assertTrue(qa_calibrate.plateThicknessSaved()[0])
+
+    def testSpoilboardRecorded(self):
+        check = qa_calibrate.spoilboardRecorded("jog")
+        self.write(qa_calibrate.SIDECAR, {"spoilboard": {"measuredBy": "probe",
+                                                         "measuredOn": qa_calibrate.today()}})
+        self.assertFalse(check()[0])
+        self.write(qa_calibrate.SIDECAR, {"spoilboard": {"measuredBy": "jog", "zLimit": 108.5,
+                                                         "measuredOn": qa_calibrate.today()}})
+        self.write(qa_calibrate.PROFILE, {"expectedSettings": {"$132": "108.500"}})
+        done, message = check()
+        self.assertTrue(done)
+        self.assertIn("108.500", message)
+
+    def testControllerPort(self):
+        self.write(qa_calibrate.PROFILE, {"portDeviceName": os.path.join(self.repo, "tty")})
+        self.assertFalse(qa_calibrate.controllerConnected()[0])
+        open(os.path.join(self.repo, "tty"), "w").close()
+        self.assertTrue(qa_calibrate.controllerConnected()[0])
+
+    def testProfileUnchanged(self):
+        with mock.patch.object(evidence, "gitClean", return_value=(True, "")):
+            self.assertEqual(qa_calibrate.profileUnchanged()[0], qaRunner.PASS)
+        with mock.patch.object(evidence, "gitClean", return_value=(False, " M profiles/x")):
+            result, note = qa_calibrate.profileUnchanged()
+            self.assertEqual(result, qaRunner.FAIL)
+            self.assertIn("M profiles/x", note)
+
+    def testGitClean(self):
+        self.assertFalse(evidence.gitClean(self.repo, "profiles/")[0])  # not a repository
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.assertIsInstance(evidence.gitClean(root, "no-such-path-qa/")[0], bool)
 
 
 class MiscTests(unittest.TestCase):
@@ -425,6 +836,15 @@ class MiscTests(unittest.TestCase):
         self.assertIn("Y has no title", problems)
         self.assertIn("Y has no expect", problems)
         self.assertIn("Y has unknown keys ['typo']", problems)
+        badSteps = {"name": "b", "title": "B", "sections": [
+            {"title": "S", "items": [
+                {"id": "Z", "title": "z", "expect": "e", "steps": [{"run": "r", "go": 1}]},
+                {"id": "W", "title": "w", "steps": []}]}]}
+        problems = qaRunner.checklistProblems(badSteps)
+        self.assertIn("Z has both steps and do/command/expect", problems)
+        self.assertIn("Z step 1 has no do", problems)
+        self.assertIn("Z step 1 has unknown keys ['go']", problems)
+        self.assertIn("W has no steps", problems)
 
     def testGitCommit(self):
         commit = qaRunner.gitCommit()
@@ -457,7 +877,8 @@ class ChecklistSanityTests(unittest.TestCase):
                 self.assertEqual(len(ids), len(set(ids)))
                 for _, item in qaRunner.flatten(checklist):
                     self.assertTrue(item["title"].strip(), item["id"])
-                    self.assertTrue(item["expect"].strip(), item["id"])
+                    for step in qaRunner.steps(item):
+                        self.assertTrue(qaRunner.text(step["do"]).strip(), item["id"])
                 self.assertEqual(checklist["machine"], "6060 ProverXL V1")
 
     def testNamesAreDistinct(self):
@@ -486,7 +907,7 @@ class ChecklistSanityTests(unittest.TestCase):
                 sources[program] = file.read()
         for checklist in self.CHECKLISTS:
             for _, item in qaRunner.flatten(checklist):
-                command = item.get("command", "")
+                command = " ".join(step.get("run") or "" for step in qaRunner.steps(item))
                 for program in sources:
                     if f"python {program}" not in command:
                         continue
