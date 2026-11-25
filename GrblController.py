@@ -456,11 +456,17 @@ class GrblController(serial.Serial):
     def runHomingCycle(self, homingPosition=None):
         if homingPosition is None:
             homingPosition = self.homingPosition  # from the profile, or bottomLeftZUp
-        self.homingPosition = homingPosition
-        self.send('$23=' + homingPosition)
-        self.send('$H')  # This does not need a sendAndWait() in order for self.getMachineCoordinates() to succeed, because $H is fully synchronous already.
+        # $H answers "ok" only when homing has finished, which on a big machine can
+        # take more than the port's 30 s read timeout ($25=500 mm/min over 622 mm is
+        # 75 s).  send() would give up early and leave that "ok" unread, and the next
+        # status query would read it as its own reply (state None).  tryHomingCycle()
+        # waits up to 120 s and reports an alarm or timeout instead.
+        failure = self.tryHomingCycle(homingPosition)
+        if failure is not None:
+            reason = "no reply within 120 s" if failure == "timeout" else f"ALARM:{failure}"
+            raise RuntimeError(f"Homing failed ({reason}).")
 
-        # Unlike other commands $H doesn't seem to need a G4 P0.01 to force sync.
+        # $H is fully synchronous, so no G4 P0.01 is needed before reading the position.
         return self.getMachineCoordinates()
 
     def send(self, gcode):

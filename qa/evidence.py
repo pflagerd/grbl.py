@@ -103,6 +103,17 @@ def canImport(python, module):
         return False
 
 
+# What jog.py prints once it has connected and (with --home) homed: nothing
+# before these two lines, which mean jog mode has started.
+JOG_MODE_STARTS = (
+    "Wait while it connects and homes the machine; it prints nothing meanwhile. Jog "
+    "mode has started when it prints these two lines:\n"
+    "    Jog mode: arrows X/Y, Shift+Up/Down Z. Tap to step 0.1 mm (Alt+tap 0.01 mm), "
+    "hold to jog; hold Ctrl to creep (1/10 speed).\n"
+    "    Enter accepts (after any queued steps finish), Esc aborts at once. The "
+    "keyboard is captured until then.")
+
+
 def consoleSteps(program, repo, shown=None):
     """The opening steps both checklists share: a second console, in the
     repository root, with the venv active.  Marked "again": on resume they are
@@ -120,7 +131,8 @@ def consoleSteps(program, repo, shown=None):
         {"do": "In the second console, please go to the repository root:",
          "run": f"cd {shown or repo}",
          "already": inRepo, "verify": inRepo, "again": True},
-        {"do": "In the second console, please activate the venv:",
+        {"do": "If you haven't already activated the venv in the second console please "
+               "activate it thus:",
          "run": "source .venv/bin/activate",
          "expect": "The prompt starts with (.venv).", "again": True},
     ]
