@@ -85,7 +85,7 @@ def jogStep(actions, expect, command=JOG):
         "do": "Please read all of this first, because jog mode captures the keyboard. "
               "In the second console, start jog.py:",
         "run": command,
-        "actions": ["Wait for the jog-mode banner."] + actions +
+        "actions": [evidence.JOG_MODE_STARTS] + actions +
                    ["Come back here once jog.py has finished."],
         "expect": expect,
     }
@@ -107,7 +107,7 @@ CHECKLIST = {
                 "operation."),
     "intro": evidence.consoleSteps("jog.py", REPO, qaRunner.shortPath(REPO)) + [
         {"do": "Please make sure the spindle is off and the bit is well clear of the "
-               "spoilboard, and keep a hand near reset throughout."},
+               "spoilboard, and keep a hand near the E-stop button throughout."},
         {"do": "Every jog.py run homes the machine first, because connecting resets this "
                "controller. That's why each command here uses --home."},
     ],
@@ -215,7 +215,7 @@ CHECKLIST = {
                          "already": loggedInAgain, "verify": loggedInAgain},
                         jogStep(["Press Esc."],
                                 "No setup messages and no questions: it connects, homes "
-                                "and shows the banner. After Esc: \"Jog aborted. MPos: "
+                                "and prints the two lines above. After Esc: \"Jog aborted. MPos: "
                                 f"{HOME}\"."),
                     ],
                 },
@@ -230,14 +230,12 @@ CHECKLIST = {
             "items": [
                 {
                     "id": "H1",
-                    "title": "The banner",
+                    "title": "The two lines that start jog mode",
                     "steps": [jogStep(
-                        ["Read the two lines it prints as jog mode starts.", "Press Enter."],
-                        "\"Jog mode: arrows X/Y, Shift+Up/Down Z. Tap to step 0.1 mm "
-                        "(Alt+tap 0.01 mm), hold to jog; hold Ctrl to creep (1/10 "
-                        "speed).\" and \"Enter accepts (after any queued steps finish), "
-                        "Esc aborts at once. The keyboard is captured until then.\" "
-                        f"Then \"Jog accepted. MPos: {HOME}\".")],
+                        ["Check that the two lines it prints are exactly as shown above.",
+                         "Press Enter."],
+                        "The two lines exactly as shown above, then \"Jog accepted. MPos: "
+                        f"{HOME}\".")],
                 },
                 {
                     "id": "H2",
@@ -325,7 +323,8 @@ CHECKLIST = {
                     "id": "H10",
                     "title": "Stopping short at the far edge (X)",
                     "safety": "It drives toward the right-hand switch. Keep a hand near "
-                              "reset, and let go if it doesn't slow down before the switch.",
+                              "the E-stop button, and let go if it doesn't slow down before "
+                              "the switch.",
                     "steps": [jogStep(
                         ["Hold Right until it stops by itself (about 40 seconds).",
                          "Press Enter."],
@@ -337,7 +336,7 @@ CHECKLIST = {
                     "id": "H11",
                     "title": "A diagonal slides along an edge",
                     "safety": "It drives toward the back and right-hand switches. Keep a "
-                              "hand near reset.",
+                              "hand near the E-stop button.",
                     "steps": [jogStep(
                         ["Hold Right and Up together until everything stops (about a "
                          "minute).", "Press Enter."],

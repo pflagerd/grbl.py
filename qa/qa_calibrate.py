@@ -122,7 +122,7 @@ def jogStep(actions, expect):
         "do": "Please read all of this first, because jog mode captures the keyboard. "
               "In the second console, start jog.py:",
         "run": JOG,
-        "actions": ["Wait for the jog-mode banner."] + actions +
+        "actions": [evidence.JOG_MODE_STARTS] + actions +
                    ["Come back here once jog.py has finished."],
         "expect": expect,
     }
@@ -142,7 +142,7 @@ CHECKLIST = {
         {"do": "Please plug in the controller's USB cable and switch the controller on.",
          "already": controllerConnected, "verify": controllerConnected, "again": True},
         {"do": "Please make sure the spindle is off and there are no clamps or stock on "
-               "the table, and keep a hand near reset or power throughout."},
+               "the table, and keep a hand near the E-stop button throughout."},
         {"do": "The Z checks need the bit you will cut with, or one with the same "
                "stick-out. Please fit it now if it isn't fitted already."},
         {"do": f"The full calibration rewrites {PROFILE}. It's tracked by git, so git "
@@ -299,7 +299,7 @@ CHECKLIST = {
                     "id": "C10",
                     "title": "Operator-stopped Z probe",
                     "safety": "It will not stop by itself before the spoilboard. Eyes on "
-                              "the tip, hand on Enter and near reset.",
+                              "the tip, hand on Enter and near the E-stop button.",
                     "steps": [
                         {"do": "Please watch the tip, and press Enter in the calibrate.py "
                                "console when it is a few millimetres above the "
@@ -648,8 +648,8 @@ CHECKLIST = {
                     "id": "ZP3",
                     "title": "Two-touch probe of the spoilboard",
                     "needs": PLATE_NEEDED,
-                    "safety": "If the bit touches the plate and doesn't stop, hit reset at "
-                              "once.",
+                    "safety": "If the bit touches the plate and doesn't stop, hit the E-stop "
+                              "button at once.",
                     "steps": [
                         {"do": "Please put the plate under the bit, clip on to the bit, "
                                "and press Enter in the calibrate.py console.",

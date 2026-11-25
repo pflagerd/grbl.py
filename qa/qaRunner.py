@@ -98,7 +98,11 @@ RESET = "\033[0m"
 
 HEAD = ""                    # where an "S12:" heading starts: the left edge
 BODY = HEAD + "    "         # everything under it: 4 further in
-CONTINUE_PROMPT = BODY + "Press Enter when you're ready to continue (or q or Esc to quit). "
+CONTINUE_PROMPT = BODY + ("Press Enter when you're ready to continue (b to go back, q or Esc "
+                          "to quit). ")
+# Where there is nothing to go back to, b isn't offered.
+FIRST_CONTINUE_PROMPT = BODY + "Press Enter when you're ready to continue (or q or Esc to quit). "
+BACK = "back"   # runSteps / itemPrompt: the operator went back past the first step
 RECHECK_PROMPT = BODY + "Press Enter to check again, c to carry on anyway, or q or Esc to quit. "
 START_PROMPT = BODY + "Press Enter when you're ready to start (or q or Esc to quit). "
 GO_ON_PROMPT = BODY + "Press Enter when you're ready to go on (or q or Esc to quit). "
@@ -737,19 +741,35 @@ class Runner:
     def showStep(self, step, label=""):
         if step.get("do"):
             self.say(label + self.resolve(step["do"]), BODY, STEP)
-        for line in str(step.get("run") or "").split("\n"):
-            if line:
-                # A command is never wrapped, so it can be copied as it is.
+        commands = [line for line in str(step.get("run") or "").split("\n") if line]
+        if commands:
+            # Rule: an empty line before and after every shell command snippet.
+            # A command is never wrapped, so it can be copied as it is.
+            self.gap()
+            for line in commands:
                 self.out(BODY + "    " + line)
+            self.out("")
         for number, action in enumerate(step.get("actions") or [], 1):
-            self.out(textwrap.fill(self.resolve(action), WIDTH,
-                                   initial_indent=f"{BODY}  {number:>2}. ",
+            # An action's first line is wrapped after its number; lines that
+            # start with spaces are quoted program output, shown as a block of
+            # their own, further in, with an empty line before and after.
+            first, *quoted = self.resolve(action).split("\n")
+            self.out(textwrap.fill(first, WIDTH, initial_indent=f"{BODY}  {number:>2}. ",
                                    subsequent_indent=BODY + " " * 6))
+            if quoted:
+                self.gap()
+                for line in quoted:
+                    # A hanging indent, so a wrapped line still reads as one.
+                    self.out(textwrap.fill(line.strip(), WIDTH,
+                                           initial_indent=BODY + " " * 10,
+                                           subsequent_indent=BODY + " " * 12))
+                self.out("")
         expect = self.resolve(step.get("expect"))
         if expect:
             self.say("You should see: " + expect, BODY)
 
-    def runSteps(self, stepList, owner, enterAfterLast=False, only=None, header=None):
+    def runSteps(self, stepList, owner, enterAfterLast=False, only=None, header=None,
+                 start=0, history=(), canGoBack=True):
         """Show the steps one at a time, waiting for Enter between them.
 
         Every step starts with its number on a line of its own ("S12:", so it
@@ -759,13 +779,25 @@ class Runner:
         is skipped.  After the last step there is no Enter (the answer prompt
         follows) unless it has a check or enterAfterLast is set.  only, if
         given, picks the steps to show (the rest keep their numbers).
+
+        b at a step's prompt goes back to the step shown before it, shown in
+        full even if it is already done.  start and history pick up part-way
+        (history: the steps shown before start, in order).  From the first
+        step, b returns BACK if canGoBack, so the caller can go further back.
+        Otherwise returns the indexes of the steps shown, in order; the last
+        is the one on screen.
         """
         total = len(stepList)
-        for number, step in enumerate(stepList, 1):
+        history = list(history)
+        index = start
+        revisit = start if (start or history) else None   # shown in full, done or not
+        while index < total:
+            step = stepList[index]
             if only and not only(step):
+                index += 1
                 continue
-            label = self.label(owner, number - 1)
-            if step.get("already"):
+            label = self.label(owner, index)
+            if step.get("already") and index != revisit:
                 done, message = step["already"]()
                 if done:
                     # It opens the next screen, so it stays in view.
@@ -774,6 +806,8 @@ class Runner:
                     self.gap()
                     self.say(f"{label} already done. {message}", HEAD, rest=BODY)
                     self.out("")   # a blank line after each report
+                    history.append(index)   # b can still go back to it, in full
+                    index += 1
                     continue
             if self.freshScreen() and header:
                 header()   # the test's title and safety note, on every screen
@@ -782,13 +816,26 @@ class Runner:
             self.out("")
             self.showStep(step)
             check = step.get("verify") or step.get("already")
-            if number == total and not check and not enterAfterLast:
-                break
-            prompt = CONTINUE_PROMPT
+            if index == total - 1 and not check and not enterAfterLast:
+                history.append(index)
+                return history
+            back = bool(history) or canGoBack
+            prompt = CONTINUE_PROMPT if back else FIRST_CONTINUE_PROMPT
+            wentBack = False
             while True:
-                answer = self.askKey(prompt, ("q", "c") if prompt == RECHECK_PROMPT else ("q",))
+                if prompt == RECHECK_PROMPT:
+                    keys = ("q", "c")
+                else:
+                    keys = ("q", "b") if back else ("q",)
+                answer = self.askKey(prompt, keys)
                 if answer in ("q", "quit"):
                     raise Quit()
+                if answer in ("b", "back") and back and prompt != RECHECK_PROMPT:
+                    if not history:
+                        return BACK
+                    index = revisit = history.pop()
+                    wentBack = True
+                    break
                 if not check or (answer == "c" and prompt == RECHECK_PROMPT):
                     break
                 done, message = check()
@@ -796,9 +843,20 @@ class Runner:
                 if done:
                     break
                 prompt = RECHECK_PROMPT
+            if wentBack:
+                continue
+            history.append(index)
+            index += 1
+        return history
 
-    def itemPrompt(self, index):
-        """Ask until the item is answered.  Returns the next index."""
+    def hasOpening(self):
+        """Is there anything before the first test to go back to?"""
+        return bool(self.checklist.get("purpose") or isinstance(self.checklist.get("intro"), list))
+
+    def itemPrompt(self, index, fromEnd=False):
+        """Ask until the item is answered.  Returns the next index (index - 1
+        to go back; -1 means back into the opening steps).  fromEnd: coming
+        back from the next test, so start at this test's last step."""
         _, item = self.items[index]
         self.freshScreen()
         self.showItem(index)
@@ -818,15 +876,28 @@ class Runner:
                          f"this test as {done}.", HEAD, rest=BODY)
                 self.record(item, result, note)
                 return index + 1
-        self.runSteps(steps(item), item["id"], header=lambda: self.showItem(index))
+        stepList = steps(item)
+        canGoBack = index > 0 or self.hasOpening()
+
+        def show(start=0, history=()):
+            return self.runSteps(stepList, item["id"], header=lambda: self.showItem(index),
+                                 start=start, history=history, canGoBack=canGoBack)
+        if fromEnd and stepList:
+            shown = show(len(stepList) - 1, range(len(stepList) - 1))
+        else:
+            shown = show()
+        if shown == BACK:
+            return index - 1
         pending = ""
-        prompt, help_ = (FIRST_ITEM_PROMPT, FIRST_ITEM_HELP) if index == 0 else \
-            (ITEM_PROMPT, ITEM_HELP)
         while True:
+            # b goes back a step within this test, or to the test before.
+            backOK = len(shown) >= 2 or canGoBack
+            prompt, help_ = (ITEM_PROMPT, ITEM_HELP) if backOK else \
+                (FIRST_ITEM_PROMPT, FIRST_ITEM_HELP)
             previous = self.session["answers"].get(item["id"])
             keep = f"(Enter keeps {previous['result']}) " if previous else ""
             key, inline = self.choose(BODY + keep + prompt, ITEM_WORDS,
-                                      ("p", "f", "s", "n", "q") if index == 0 else None)
+                                      None if backOK else ("p", "f", "s", "n", "q"))
             if key == "":
                 if previous:
                     return index + 1
@@ -834,7 +905,12 @@ class Runner:
                 continue
             if key == "q":
                 raise Quit()
-            if key == "b" and index > 0:
+            if key == "b" and backOK:
+                if len(shown) >= 2:
+                    shown = show(shown[-2], shown[:-2])
+                    if shown == BACK:
+                        return index - 1
+                    continue
                 return index - 1
             if key == "n":
                 note = inline or self.ask(BODY + "Note: ").strip()
@@ -861,6 +937,52 @@ class Runner:
                 return index + 1
             self.say(help_, BODY)
 
+    def openingRest(self):
+        """The rest of S1, after the purpose: the results file (new sessions),
+        the note about step numbers, and the prompt.  S1 has no back."""
+        if self.isNew:
+            program = self.checklist.get("program", "This program")
+            self.out("")
+            self.say(f"{program} will save your responses and any relevant data to "
+                     "the file:", BODY)
+            self.out("")
+            self.out(f"{BODY}    {shortPath(self.basePath)}.md")
+        if self.checklist.get("purpose"):
+            self.out("")
+            self.say(STEP_NOTICE.format(label=self.label("opening", 0)[:-1]), BODY)
+            self.out("")
+            if self.askKey(START_PROMPT if self.isNew else GO_ON_PROMPT) in ("q", "quit"):
+                raise Quit()
+
+    def introSteps(self, fromEnd=False):
+        """The intro steps after S1.  On resume, only those marked "again" (the
+        second console and so on; their checks skip what is still in place).
+        Returns BACK if the operator went back to S1."""
+        intro = self.checklist.get("intro")
+        if isinstance(intro, str):
+            if self.firstIndex == 0 and not fromEnd:
+                self.say(intro, "  ")
+            return BACK if fromEnd and self.checklist.get("purpose") else []
+        if not intro:
+            return BACK if fromEnd and self.checklist.get("purpose") else []
+        only = None if self.firstIndex == 0 else (lambda step: step.get("again"))
+        shown = [i for i, step in enumerate(intro) if not only or only(step)]
+        if not shown:
+            return BACK if fromEnd and self.checklist.get("purpose") else []
+        start, history = (shown[-1], shown[:-1]) if fromEnd else (0, ())
+        return self.runSteps(intro, "intro", enterAfterLast=True, only=only, start=start,
+                             history=history, canGoBack=bool(self.checklist.get("purpose")))
+
+    def introAndBack(self, fromEnd=False):
+        """The intro steps; back from the first of them shows S1 again."""
+        while self.introSteps(fromEnd) == BACK:
+            self.freshScreen()
+            self.say(self.label("opening", 0), HEAD, LABEL)
+            self.out("")
+            self.say(self.checklist["purpose"], BODY)
+            self.openingRest()
+            fromEnd = False
+
     def run(self):
         """Run the checklist.  Returns the session dict."""
         try:
@@ -875,32 +997,17 @@ class Runner:
                 self.out("")
                 self.say(purpose, BODY)
             index = self.start()
-            if index == 0 and not self.session["answers"]:
-                program = self.checklist.get("program", "This program")
-                self.out("")
-                self.say(f"{program} will save your responses and any relevant data to "
-                         "the file:", BODY)
-                self.out("")
-                self.out(f"{BODY}    {shortPath(self.basePath)}.md")
-            if purpose:
-                self.out("")
-                self.say(STEP_NOTICE.format(label=self.label("opening", 0)[:-1]), BODY)
-                self.out("")
-                prompt = START_PROMPT if index == 0 and not self.session["answers"] \
-                    else GO_ON_PROMPT
-                if self.askKey(prompt) in ("q", "quit"):
-                    raise Quit()
-            intro = self.checklist.get("intro")
-            if isinstance(intro, str):
-                if index == 0:
-                    self.say(intro, "  ")
-            elif intro:
-                # On resume, only the steps marked "again" (opening the second
-                # console and so on); their checks skip what is still in place.
-                self.runSteps(intro, "intro", enterAfterLast=True,
-                              only=None if index == 0 else (lambda step: step.get("again")))
+            self.isNew = index == 0 and not self.session["answers"]
+            self.firstIndex = index
+            self.openingRest()
+            self.introAndBack()
             entering = True  # moving forward: offer the section prompt at a section start
             while index < len(self.items):
+                if index < 0:
+                    # Back from the first test: into the opening steps.
+                    self.introAndBack(fromEnd=True)
+                    index, entering = 0, True
+                    continue
                 if entering and self.isSectionStart(index) \
                         and self.items[index][1]["id"] not in self.session["answers"]:
                     nextIndex = self.sectionPrompt(index)
@@ -908,7 +1015,7 @@ class Runner:
                         entering = nextIndex > index
                         index = nextIndex
                         continue
-                nextIndex = self.itemPrompt(index)
+                nextIndex = self.itemPrompt(index, fromEnd=not entering)
                 entering = nextIndex > index
                 index = nextIndex
             self.session["finished"] = True
