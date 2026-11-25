@@ -1,9 +1,6 @@
 from datetime import datetime
 import re
-
-from GrblController import *
-
-workPieceLowerLeftOriginMachineCoordinates = GrblController.Vector(-405.000, -297.000, -81.0)
+import sys
 
 
 def parseGcodeLine(gcode_string):
