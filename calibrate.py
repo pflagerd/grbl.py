@@ -597,6 +597,8 @@ def describeChoice(name, choices):
     if name == 'method':
         return choices['method']
     if name == 'surface':
+        if choices.get('measuredBy'):
+            return f"{choices['measuredBy']} top at z={choices['surface']:.3f}"
         if 'contactZ' in choices:
             return (f"probe touched at z={choices['contactZ']:.3f}, plate {choices['plate']:g} mm "
                     f"-> surface z={choices['surface']:.3f}")
@@ -608,8 +610,8 @@ def describeChoice(name, choices):
 
 def forgetChoice(choices, name):
     # Drop one answer, and whatever was measured or decided because of it.
-    dependants = {'method': ('surface', 'contactZ', 'plate', 'kind'),
-                  'surface': ('contactZ', 'plate')}
+    dependants = {'method': ('surface', 'contactZ', 'plate', 'kind', 'measuredBy'),
+                  'surface': ('contactZ', 'plate', 'measuredBy')}
     choices.pop(name, None)
     for key in dependants.get(name, ()):
         choices.pop(key, None)
@@ -621,8 +623,15 @@ def askYesNo(ask, prompt):
 
 def runZLimitStep(grbl, profile, profilePath, method=None, intoDepth=None, thickness=None,
                   ask=None, out=print, runJog=None, checkEnvironment=None,
-                  pinTimeout=PROBE_PIN_TIMEOUT, today=None):
+                  pinTimeout=PROBE_PIN_TIMEOUT, today=None, surface=None, measuredBy=None,
+                  recordExtra=None):
     """Interactive Z-limit step.  Returns the $132 written, or None if nothing was written.
+
+    surface, measuredBy, recordExtra: for a caller that already knows the
+    surface z (surface-spoiler-board.py: the surfaced top).  The surface step
+    is then filled from `surface` instead of being measured, described as
+    "<measuredBy> top", and the spoilboard record gets measuredBy plus
+    recordExtra's fields.  Changing that step at the summary measures afresh.
 
     The machine must be homed.  Nothing is written to Grbl before the summary is
     confirmed.  The spoilboard result also becomes the profile's calibrated $132
@@ -650,7 +659,7 @@ def runZLimitStep(grbl, profile, profilePath, method=None, intoDepth=None, thick
     pullOff = float(settings.get('$27', '0'))
     fullTravel = float(profile.workAreaZ)
 
-    given = {'method': method, 'intoDepth': intoDepth, 'thickness': thickness}
+    given = {'method': method, 'intoDepth': intoDepth, 'thickness': thickness, 'surface': surface}
     choices = {}
 
     def fill(name):
@@ -658,7 +667,10 @@ def runZLimitStep(grbl, profile, profilePath, method=None, intoDepth=None, thick
         # abandoned, so the method has to be chosen again.
         if given.get(name) is not None:
             choices[name] = given.pop(name)
-            out(f"  {STEP_TITLES[name].capitalize()}: {describeChoice(name, choices)} (from the command line)")
+            if name == 'surface':
+                choices['measuredBy'] = measuredBy
+            source = "given" if name == 'surface' else "from the command line"
+            out(f"  {STEP_TITLES[name].capitalize()}: {describeChoice(name, choices)} ({source})")
             return True
         if name == 'method':
             choices['method'] = askChoice(ask, f"Find the reference surface by ({' / '.join(methods)}): ",
@@ -742,8 +754,11 @@ def runZLimitStep(grbl, profile, profilePath, method=None, intoDepth=None, thick
     writeZLimit(grbl, new132, out)
     if kind == SURFACE_SPOILBOARD:
         spoilboard = {"surfaceZ": round(choices['surface'], 3), "intoDepth": choices['intoDepth'],
-                      "zLimit": new132, "measuredBy": "probe" if 'contactZ' in choices else "jog",
-                      "measuredOn": today}
+                      "zLimit": new132, "measuredOn": today,
+                      "measuredBy": choices.get('measuredBy')
+                      or ("probe" if 'contactZ' in choices else "jog")}
+        if choices.get('measuredBy') and recordExtra:
+            spoilboard.update(recordExtra)
         if 'contactZ' in choices:
             spoilboard["probeContactZ"] = round(choices['contactZ'], 3)
             spoilboard["plateThickness"] = choices['plate']
