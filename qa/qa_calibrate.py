@@ -111,9 +111,12 @@ def there(text):
     return f"In the calibrate.py console, please {text}"
 
 
-def start(command, expect, what="calibrate.py"):
-    return {"do": f"Please start {what} in the second console:", "run": command,
-            "expect": expect}
+def start(command, expect, what="calibrate.py", intro=None):
+    """A step that starts a program in the second console.  intro, if given, is
+    a paragraph shown first (what this group of tests is about)."""
+    return {"do": (intro + "\n\n" if intro else "") +
+                  f"Please start {what} in the second console:",
+            "run": command, "expect": expect}
 
 
 def jogStep(actions, expect):
@@ -172,9 +175,6 @@ CHECKLIST = {
         },
         {
             "title": "Full calibration",
-            "intro": ("One run of the full calibration: [[C1]] starts it, and the steps after "
-                      "it follow its prompts in order. Please do each step in the "
-                      "calibrate.py console, then come back here."),
             "items": [
                 {
                     "id": "C1",
@@ -183,7 +183,11 @@ CHECKLIST = {
                         start(CALIBRATE, "\"Connecting to /dev/ttyUSB0 @ 115200...\", "
                               "\"Connected. Grbl 1.1h, N settings read.\", \"Keep a hand "
                               "near reset/power at all times.\" and a prompt to clear the "
-                              "work area."),
+                              "work area.",
+                              intro="Now one run of the full calibration. This step starts "
+                                    "it, and the steps after it follow its prompts in "
+                                    "order: please do each one in the calibrate.py "
+                                    "console, then come back here."),
                         {"do": there("press Enter."),
                          "expect": "\"=== Switch press test (no motion) ===\"."},
                     ],
@@ -361,10 +365,6 @@ CHECKLIST = {
         },
         {
             "title": "Z limit (jog)",
-            "intro": ("The jog method of the Z-limit step. To test the fence safely, the "
-                      "\"surface\" here is a point about 20 mm above the spoilboard, in "
-                      "the air, with thickness 0 and depth 0, so the fence sits where the "
-                      "tip was and nothing can touch."),
             "items": [
                 {
                     "id": "ZJ1",
@@ -372,7 +372,12 @@ CHECKLIST = {
                     "steps": [
                         start(RESET, "\"=== Reset Z limit ===\" and \"$132 is already N, "
                               "the profile's calibrated value.\" (N is the profile's "
-                              "expectedSettings $132.) Nothing moves.", "the reset"),
+                              "expectedSettings $132.) Nothing moves.", "the reset",
+                              intro="Now the jog method of the Z-limit step. To test the "
+                                    "fence safely, the \"surface\" here is a point about "
+                                    "20 mm above the spoilboard, in the air, with "
+                                    "thickness 0 and depth 0, so the fence sits where the "
+                                    "tip was and nothing can touch."),
                     ],
                 },
                 {
@@ -482,15 +487,14 @@ CHECKLIST = {
         },
         {
             "title": "Z limit: power cycle and reset",
-            "intro": "These run with the in-the-air limit from the previous section still "
-                     "in force.",
             "items": [
                 {
                     "id": "ZR1",
                     "title": "$132 persists across a power cycle",
                     "steps": [
-                        {"do": "Please switch the controller off, wait a few seconds, and "
-                               "switch it on again.",
+                        {"do": "The in-the-air limit from [[ZJ7]] is still in force for "
+                               "the next few tests.\n\nPlease switch the controller off, "
+                               "wait a few seconds, and switch it on again.",
                          "verify": controllerConnected},
                         {"do": "In the second console, please read the settings:",
                          "run": READ_SETTINGS,
@@ -542,16 +546,16 @@ CHECKLIST = {
         },
         {
             "title": "Z limit (jog, on the spoilboard)",
-            "intro": ("Touching the real spoilboard with the jog method. The fence is now "
-                      "the full travel, so nothing but you stops the bit: please creep "
-                      "with Ctrl and tap the last bit."),
             "items": [
                 {
                     "id": "ZS1",
                     "title": "Touch off on paper, then quit with nothing written",
                     "safety": "Spindle off. Creep the last few millimetres.",
                     "steps": [
-                        {"do": "Please put a sheet of paper on the spoilboard, under the "
+                        {"do": "Now touching the real spoilboard with the jog method. The "
+                               "fence is now the full travel, so nothing but you stops the "
+                               "bit: please creep with Ctrl and tap the last bit.\n\n"
+                               "Please put a sheet of paper on the spoilboard, under the "
                                "bit."},
                         start(Z_LIMIT_JOG, "\"Has the machine been homed ($H) since it "
                               "was powered on?\"", "the jog method"),
@@ -605,8 +609,8 @@ CHECKLIST = {
         {
             "title": "Z limit (probe)",
             "needs": PLATE_NEEDED,
-            "intro": ("The two probe methods. They were tested only with fakes. Please "
-                      "skip this whole section until a probe plate is wired."),
+            "intro": ("Now the two probe methods. They have been tested only with fakes "
+                      "so far. Please skip them until a probe plate is wired."),
             "items": [
                 {
                     "id": "ZP1",

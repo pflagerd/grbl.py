@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import textwrap
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -145,7 +146,7 @@ class AnswerTests(RunnerTestCase):
         self.assertEqual(self.answers(session)["A2"], ("skip", "second note"))
 
     def testUnknownAnswerShowsHelpAndAsksAgain(self):
-        session = self.run_(["", "x", "", "p", "q"])
+        session = self.run_(["x", "", "p", "q"])
         self.assertEqual(self.answers(session)["A1"], ("pass", ""))
         self.assertEqual(" ".join(self.text().split()).count(qaRunner.FIRST_ITEM_HELP), 2)
 
@@ -162,7 +163,7 @@ class AnswerTests(RunnerTestCase):
         self.assertIn("Notice that this step is labelled (demo.py) S1. S stands for step.", notice)
         self.assertLess(save, next(i for i, line in enumerate(lines) if "Notice that" in line))
         self.assertEqual(self.script.prompts[0], qaRunner.START_PROMPT)
-        self.assertEqual(self.script.prompts[1], qaRunner.FIRST_SECTION_PROMPT)
+        self.assertEqual(self.script.prompts[1], qaRunner.BODY + qaRunner.ITEM_PROMPT)
 
     def testLabelNamesTheProgram(self):
         plain = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=lambda *a: None)
@@ -188,7 +189,7 @@ class AnswerTests(RunnerTestCase):
             {"do": "Please stop beta.", "actions": ["Hold X.", "Press Enter."],
              "expect": "Beta stops."}])
         outputs = []
-        self.run_(["", "", "p", "q"], checklist=checklist,
+        self.run_(["", "p", "q"], checklist=checklist,
                   onAsk=lambda prompt: outputs.append(len(self.output)))
         lines = self.text().splitlines()
         first = lines.index("S1:")
@@ -199,34 +200,44 @@ class AnswerTests(RunnerTestCase):
         self.assertIn("       1. Hold X.", lines)
         self.assertIn("       2. Press Enter.", lines)
         # Step 2 is shown only after Enter at step 1; no Enter after the last step.
-        self.assertEqual(self.script.prompts[1], qaRunner.FIRST_CONTINUE_PROMPT)
-        shownBefore = "\n".join(self.output[:outputs[1]])
+        self.assertEqual(self.script.prompts[0], qaRunner.FIRST_CONTINUE_PROMPT)
+        shownBefore = "\n".join(self.output[:outputs[0]])
         self.assertNotIn("Please stop beta.", shownBefore)
-        self.assertTrue(self.script.prompts[2].startswith(qaRunner.BODY + "How did it go?"))
+        self.assertTrue(self.script.prompts[1].startswith(qaRunner.BODY + "How did it go?"))
         self.assertEqual(self.answers(self.loadJson())["S1"], ("pass", ""))
 
-    def testAStepAlreadyDoneIsSkipped(self):
+    def testAStepAlreadyDoneGetsItsOwnScreen(self):
+        calls = []
+
+        def already():
+            calls.append(1)
+            return True, "It's open."
         checklist = self.stepChecklist([
-            {"do": "Please open a console.", "already": lambda: (True, "It's open.")},
+            {"do": "Please open a console.", "already": already},
             {"do": "Please run it.", "expect": "It runs."}])
         self.run_(["", "p", "q"], checklist=checklist)
-        self.assertIn("S1: already done. It's open.", self.text().splitlines())
-        self.assertNotIn("Please open a console.", self.text())
-        self.assertNotIn(qaRunner.CONTINUE_PROMPT, self.script.prompts)
+        lines = self.text().splitlines()
+        first = lines.index("S1:")
+        # The heading, the note, then the step's own text, and the usual prompt.
+        self.assertEqual(lines[first + 1:first + 5],
+                         ["", "    Already done: It's open.", "", "    Please open a console."])
+        self.assertEqual(self.script.prompts[0], qaRunner.FIRST_CONTINUE_PROMPT)
+        self.assertEqual(len(calls), 1)            # Enter moves on without checking again
+        self.assertNotIn(qaRunner.RECHECK_PROMPT, self.script.prompts)
 
     def testVerifyAsksAgainUntilDoneOrCarryOn(self):
         results = iter([(False, "Not yet."), (True, "Found it.")])
         checklist = self.stepChecklist([
             {"do": "Please install it.", "verify": lambda: next(results)}])
-        self.run_(["", "", "", "p", "q"], checklist=checklist)
+        self.run_(["", "", "p", "q"], checklist=checklist)
         lines = self.text().splitlines()
         self.assertIn("    Not yet.", lines)
         self.assertIn("    Found it.", lines)
-        self.assertEqual(self.script.prompts[1:3], [qaRunner.FIRST_CONTINUE_PROMPT,
+        self.assertEqual(self.script.prompts[0:2], [qaRunner.FIRST_CONTINUE_PROMPT,
                                                     qaRunner.RECHECK_PROMPT])
         never = self.stepChecklist([{"do": "Please do it.",
                                      "verify": lambda: (False, "Not yet.")}])
-        self.run_(["", "", "c", "p", "q"], checklist=never)
+        self.run_(["", "c", "p", "q"], checklist=never)
         self.assertEqual(self.answers(self.loadJson())["S1"], ("pass", ""))
 
     def testSkipIfAndAutoAnswerWithoutAsking(self):
@@ -236,32 +247,45 @@ class AnswerTests(RunnerTestCase):
              "steps": [{"do": "Please install it."}]},
             {"id": "K3", "title": "k", "skipIf": lambda: None,
              "steps": [{"do": "Please look."}]}]}]}
-        self.run_(["", "p", "q"], checklist=checklist)
+        # Each answered-for-you test has a screen of its own, and waits for Enter.
+        self.run_(["", "", "p", "q"], checklist=checklist)
         answers = self.answers(self.loadJson())
         self.assertEqual(answers["K1"], ("pass", "All in place."))
         self.assertEqual(answers["K2"], ("skip", "It's installed already."))
         self.assertEqual(answers["K3"], ("pass", ""))
-        text = " ".join(self.text().split())
-        self.assertIn("S1: checked for you. All in place. I've recorded this test as passed.", text)
-        self.assertIn("S2: not needed. It's installed already. I've recorded this test as "
-                      "skipped.", text)
-        self.assertIn("S3: Please look.", text)
+        text = self.text()
+        self.assertIn("S1:\n\n    Checked for you: All in place.\n\n"
+                      "    I've recorded this test as passed.", text)
+        self.assertIn("S2:\n\n    Not needed: It's installed already.\n\n"
+                      "    I've recorded this test as skipped.", text)
+        self.assertIn("S3:\n\n    Please look.", text)
         self.assertNotIn("Please install it.", text)
+        self.assertEqual(self.script.prompts[:2], [qaRunner.FIRST_CONTINUE_PROMPT,
+                                                   qaRunner.CONTINUE_PROMPT])
+        self.assertEqual(self.loadJson()["answers"]["K2"]["by"], "check")
 
-    def testDoneStepsStayTogether(self):
+    def testBackToACheckedTestShowsItsScreenAgain(self):
+        checklist = {"name": "sk", "title": "Skips", "sections": [{"title": "S", "items": [
+            {"id": "K1", "title": "k", "skipIf": lambda: "Not here.",
+             "steps": [{"do": "Never shown."}]},
+            {"id": "K2", "title": "k", "steps": [{"do": "Please look."}]}]}]}
+        self.run_(["", "b", "q"], checklist=checklist)   # K1's screen, K2, b -> K1 again
+        self.assertEqual(self.text().count("Not needed: Not here."), 2)
+        self.assertNotIn("Never shown.", self.text())
+
+    def testEachDoneStepWaitsForEnter(self):
         checklist = dict(CHECKLIST, intro=[
             {"do": "Please open a console.", "already": lambda: (True, "It's open.")},
             {"do": "Please go there.", "already": lambda: (True, "It's there.")},
             {"do": "Please read this."}])
-        self.run_(["", "q"], checklist=checklist)
-        lines = self.text().splitlines()
-        first = lines.index("S1: already done. It's open.")
-        # A blank line after each report.
-        self.assertEqual(lines[first + 1:first + 4], ["", "S2: already done. It's there.", ""])
-        self.assertNotEqual(lines[first + 4], "")   # and not two in a row
-        third = lines.index("S3:")
-        self.assertEqual(lines[third + 1:third + 3], ["", "    Please read this."])
-        self.assertNotIn("move on", self.text())
+        self.run_(["", "", "q"], checklist=checklist)
+        text = self.text()
+        self.assertIn("S1:\n\n    Already done: It's open.\n\n    Please open a console.", text)
+        self.assertIn("S2:\n\n    Already done: It's there.\n\n    Please go there.", text)
+        self.assertIn("S3:\n\n    Please read this.", text)   # after an Enter at each
+        self.assertEqual(self.script.prompts, [qaRunner.FIRST_CONTINUE_PROMPT,
+                                               qaRunner.CONTINUE_PROMPT,
+                                               qaRunner.CONTINUE_PROMPT])
 
     def testNoBlankLineAtTheTopOfAScreen(self):
         self.output = []
@@ -351,9 +375,11 @@ class AnswerTests(RunnerTestCase):
     def testItemDisplay(self):
         self.run_(["", "q"])
         text = self.text()
-        for expected in ("Alpha   (First)", "S1:", "  Do alpha.", "    python a.py",
-                         "  You should see: Alpha happens.", "Section 1 of 3: First (2 items)"):
+        for expected in ("\nAlpha\n", "S1:", "  Do alpha.", "    python a.py",
+                         "  You should see: Alpha happens."):
             self.assertIn(expected, text)
+        self.assertNotIn("Section", text)   # sections aren't shown
+        self.assertNotIn("(First)", text)
 
 
 class StepBackTests(RunnerTestCase):
@@ -374,10 +400,10 @@ class StepBackTests(RunnerTestCase):
                                     "B two.", "Purpose.")]
 
     def testBackWithinATest(self):
-        # S1, intro one, [section], A one, A two -> back from A two's answer -> A one.
+        # S1, intro one, intro two, A one, A two -> back from A two's answer -> A one.
         self.run_(["", "", "", "", "b", "", "p", "q"], checklist=self.checklist())
-        self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "A one.", "A two.",
-                                        "A one.", "A two.", "B one."])
+        self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "Intro two.", "A one.",
+                                        "A two.", "A one.", "A two.", "B one."])
         self.assertEqual(self.answers(self.loadJson())["A"], ("pass", ""))
 
     def testBackFromAStepToTheOneBefore(self):
@@ -385,21 +411,22 @@ class StepBackTests(RunnerTestCase):
         # B one, then b at B one: back to A's last step (A two), not A one.
         self.assertEqual(self.shown()[-2:], ["B one.", "A two."])
 
-    def testBackIntoTheOpeningShowsDoneStepsInFull(self):
-        # A one, b -> the last intro step (Intro two), shown in full though it's done;
+    def testBackIntoTheOpening(self):
+        # S1, Intro one, Intro two (done, its own screen), A one, b -> Intro two;
         # b -> Intro one; b -> S1 again.
         self.run_(["", "", "", "b", "b", "b", "q"], checklist=self.checklist())
-        self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "A one.", "Intro two.",
-                                        "Intro one.", "Purpose."])
-        self.assertIn("(sb.py) S3: already done. Done.", self.text())   # the first time
+        self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "Intro two.", "A one.",
+                                        "Intro two.", "Intro one.", "Purpose."])
+        self.assertEqual(self.text().count("Already done: Done."), 2)
 
     def testBackReachesStepsThatWereDone(self):
         checklist = self.checklist()
         checklist["intro"] = [{"do": "Intro one.", "already": lambda: (True, "Done.")},
                               {"do": "Intro two."}]
-        # S1, Intro two (Intro one done), b -> Intro one in full, b -> S1.
-        self.run_(["", "b", "b", "q"], checklist=checklist)
-        self.assertEqual(self.shown(), ["Purpose.", "Intro two.", "Intro one.", "Purpose."])
+        # S1, Intro one (done), Intro two, b -> Intro one, b -> S1.
+        self.run_(["", "", "b", "b", "q"], checklist=checklist)
+        self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "Intro two.", "Intro one.",
+                                        "Purpose."])
 
     def testS1HasNoBack(self):
         self.run_(["b", "q"], checklist=self.checklist())
@@ -424,26 +451,23 @@ class BackTests(RunnerTestCase):
     def testBackAcrossASectionBoundary(self):
         session = self.run_(["", "p", "p", "", "b", "f redo", "", "q"])
         self.assertEqual(self.answers(session)["A2"], ("fail", "redo"))
-        # Going forward again into B1 shows the section prompt once more (B1 unanswered).
-        self.assertEqual(self.text().count("Section 2 of 3: Second"), 2)
+        # Going forward again shows the "needs" step once more (B1 unanswered).
+        self.assertEqual(self.text().count("The next 2 tests need: probe plate wired"), 2)
 
     def testBackFromSectionPromptGoesToPreviousItem(self):
         session = self.run_(["", "p", "p", "b", "s skipped", "", "q"])
         self.assertEqual(self.answers(session)["A2"], ("skip", "skipped"))
 
     def testBackAtTheFirstItem(self):
-        # The very first prompts don't offer [b]ack; typing b there just shows the help.
-        session = self.run_(["b", "", "b", "p", "q"])
+        # The very first prompt doesn't offer [b]ack; typing b there just shows the help.
+        session = self.run_(["b", "p", "q"])
         self.assertEqual(self.answers(session)["A1"], ("pass", ""))
-        self.assertEqual(self.script.prompts[0], qaRunner.FIRST_SECTION_PROMPT)
-        self.assertEqual(self.script.prompts[2], qaRunner.BODY + qaRunner.FIRST_ITEM_PROMPT)
-        self.assertNotIn("[b]ack", self.script.prompts[0] + self.script.prompts[2])
-        self.assertIn(qaRunner.FIRST_SECTION_HELP, self.text())
+        self.assertEqual(self.script.prompts[0], qaRunner.BODY + qaRunner.FIRST_ITEM_PROMPT)
+        self.assertNotIn("[b]ack", self.script.prompts[0])
         self.assertIn(qaRunner.FIRST_ITEM_HELP, " ".join(self.text().split()))
-        self.assertNotIn("go back", qaRunner.FIRST_SECTION_HELP)
         self.assertNotIn("back", qaRunner.FIRST_ITEM_HELP)
         # Later prompts still offer it.
-        self.assertIn("[b]ack", self.script.prompts[4])
+        self.assertIn("[b]ack", self.script.prompts[2])
 
     def testNoteOnAnAnsweredItemIsSavedAtOnce(self):
         self.run_(["", "p", "b", "n added later", "q"])
@@ -456,17 +480,20 @@ class SectionSkipTests(RunnerTestCase):
         session = self.run_(["", "p", "p", "s", "", "", "p"])
         for itemId in ("B1", "B2"):
             self.assertEqual(self.answers(session)[itemId],
-                             ("skip", "section skipped: probe plate wired"))
+                             ("skip", "skipped: needs probe plate wired"))
         self.assertEqual(self.answers(session)["C1"], ("pass", ""))
         self.assertTrue(session["finished"])
-        self.assertNotIn("[3/5] B1", self.text())  # its items were never shown
+        self.assertNotIn("Gamma", self.text())  # its tests were never shown
 
     def testSkipAWholeSectionWithANote(self):
-        session = self.run_(["s first section not today", "s", "", "", "p"])
-        self.assertEqual(self.answers(session)["A1"], ("skip", "first section not today"))
-        self.assertEqual(self.answers(session)["A2"], ("skip", "first section not today"))
-        self.assertEqual(self.answers(session)["B1"][1], "section skipped: probe plate wired")
+        session = self.run_(["p", "p", "s", "no plate today", "p"])
+        self.assertEqual(self.answers(session)["B1"], ("skip", "no plate today"))
+        self.assertEqual(self.answers(session)["B2"], ("skip", "no plate today"))
+        self.assertEqual(self.answers(session)["C1"], ("pass", ""))
         self.assertTrue(session["finished"])
+        # Only a section with "needs" gets such a step; it has a step number of its own.
+        self.assertIn("S3:", self.text())
+        self.assertIn(qaRunner.BODY + qaRunner.NEEDS_PROMPT, self.script.prompts)
 
     def testSkippedSectionIsSavedAtOnce(self):
         self.run_(["", "p", "p", "s", ""])  # input ends right after the section skip
@@ -499,8 +526,8 @@ class QuitResumeTests(RunnerTestCase):
     def testResumeMidSectionStartsAtTheFirstUnansweredItem(self):
         self.run_(["", "p", "q"])
         self.run_(["y", "q"])
-        self.assertIn("Beta | pipe   (First)\n\nS2:", self.text())
-        self.assertNotIn("Section 1 of 3", self.text())
+        self.assertIn("Beta | pipe\n\nS2:", self.text())
+        self.assertNotIn("Section", self.text())
 
     def testDecliningResumeStartsANewFile(self):
         self.run_(["", "p", "q"])
@@ -619,7 +646,7 @@ class OutputTests(RunnerTestCase):
         self.assertIn("Pass 2, fail 2, skip 1.", text)
         self.assertIn("Failed:", text)
         self.assertIn("S2  Beta | pipe: the | pipe\\ note", text)
-        self.assertIn("S5  Epsilon: again", text)
+        self.assertIn("S6  Epsilon: again", text)
 
     def testSummaryAfterQuitCountsUnanswered(self):
         self.run_(["", "p", "q"])
@@ -632,11 +659,11 @@ class OutputTests(RunnerTestCase):
                          "- Machine profile: Test Machine", "- Git commit: `abc1234`",
                          "- Started: 2026-11-24 09:30:01", "- Status: finished",
                          "Pass 2, fail 2, skip 1, not answered 0.",
-                         "### Failed", "- **S5** (C1) Epsilon: again",
+                         "### Failed", "- **S6** (C1) Epsilon: again",
                          "## First", "| Steps | ID | Check | Result | Note |",
                          "| S1 | A1 | Alpha | pass |  |",
                          "| S2 | A2 | Beta \\| pipe | fail | the \\| pipe\\\\ note |",
-                         "## Second", "| S3 | B1 | Gamma | skip | no plate |", "## Third"):
+                         "## Second", "| S4 | B1 | Gamma | skip | no plate |", "## Third"):
             self.assertIn(expected, markdown)
 
     def testMarkdownWhileUnfinished(self):
@@ -715,6 +742,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(evidence.listedInGroup("no-such-group-qa"))
         self.assertFalse(evidence.inGroupNow("no-such-group-qa"))
 
+    def testConsoleStepsIsOneStep(self):
+        # One step: open the console, go to the repository root, activate the venv.
+        steps = evidence.consoleSteps("demo.py", self.repo, "~/repo")
+        self.assertEqual(len(steps), 1)
+        step = steps[0]
+        self.assertEqual(step["run"].split("\n"), ["cd ~/repo", "source .venv/bin/activate"])
+        self.assertIn("demo.py", step["do"])
+        self.assertIn("activate the venv", step["do"])   # asked even when the check passes
+        self.assertEqual(step["expect"], "The prompt starts with (.venv).")
+        self.assertTrue(step["again"])
+        with mock.patch.object(evidence, "secondConsoleIn",
+                               return_value=(True, "Seen.")) as check:
+            self.assertEqual(step["already"](), (True, "Seen."))
+            self.assertEqual(step["verify"](), (True, "Seen."))
+        self.assertEqual([call.args for call in check.call_args_list], [(self.repo,)] * 2)
+        self.assertEqual(evidence.consoleSteps("d", self.repo)[0]["run"].split("\n")[0],
+                         f"cd {self.repo}")   # the real path when no shorter one is given
+
 
 class StyleTests(RunnerTestCase):
     def checklist(self):
@@ -734,7 +779,7 @@ class StyleTests(RunnerTestCase):
         checklist["sections"][0]["items"][0]["safety"] = "Hand near reset."
         with mock.patch.dict(sys.modules, {"readline": None}):
             del sys.modules["readline"]
-            self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True)
+            self.run_(["", "", "", "", "p", "q"], checklist=checklist, styled=True)
         out = self.output
         self.assertEqual(out[0], qaRunner.CLEAR)               # a fresh screen to start
         self.assertIn("(demo.py) S3:", out)                  # headings and steps are plain
@@ -745,14 +790,15 @@ class StyleTests(RunnerTestCase):
             starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR]
             at = out.index(text)
             return out[max(i for i in starts if i < at):]
-        # A done step opens the next screen, so it stays in view with the next prompt.
-        self.assertIn("(demo.py) S2: already done. It's open.", screenWith(
-            "Section 1 of 1: S (1 item)"))
+        # A done step has a screen of its own.
+        doneScreen = screenWith("(demo.py) S2:")
+        self.assertIn("    Already done: It's open.", doneScreen)
+        self.assertNotIn("(demo.py) S2:", screenWith("(demo.py) S3:"))
         # Every step starts a fresh screen once the one before was answered, and
         # a later step of a test repeats the test's title and safety note.
         second = screenWith("(demo.py) S4:")
         self.assertNotIn("(demo.py) S3:", second)
-        self.assertIn("s   (S)", second)
+        self.assertIn("s", second)          # the test's title
         self.assertIn("  Safety: Hand near reset.", second)
         # Nothing else is styled, prompts included.
         everything = "".join(line for line in out if line != qaRunner.CLEAR) + \
@@ -760,6 +806,20 @@ class StyleTests(RunnerTestCase):
         self.assertNotIn("\033", everything)
         self.assertIn(qaRunner.CONTINUE_PROMPT, self.script.prompts)
         self.assertIn(qaRunner.START_PROMPT, self.script.prompts)
+
+    def testWrapsToTheTerminalsFullWidth(self):
+        checklist = self.checklist()
+        checklist["purpose"] = " ".join(["word"] * 60)
+        size = os.terminal_size((120, 40))
+        with mock.patch.object(qaRunner.shutil, "get_terminal_size", return_value=size):
+            self.run_(["q"], checklist=checklist, styled=True)
+        purpose = [line for line in self.output if "word" in line]
+        self.assertTrue(all(len(line) <= 120 for line in purpose))
+        self.assertGreater(max(len(line) for line in purpose), 110)   # uses the width
+        self.output = []
+        self.run_(["q"], checklist=checklist)   # not a terminal: the fixed WIDTH
+        purpose = [line for line in self.output if "word" in line]
+        self.assertTrue(all(len(line) <= qaRunner.WIDTH for line in purpose))
 
     def testPromptsArePlain(self):
         runner = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=lambda *a: None,
@@ -840,6 +900,69 @@ class KeyTests(unittest.TestCase):
         with mock.patch.object(qaRunner, "keyboardIsTerminal", lambda: False), \
                 mock.patch("builtins.input", lambda prompt: " Q "):
             self.assertEqual(self.runner().askKey(qaRunner.CONTINUE_PROMPT), "q")
+
+
+class BlankLineBeforePressEnterTests(RunnerTestCase):
+    """Every "Press Enter ..." prompt has exactly one empty line above it."""
+
+    def testEveryPressEnterPromptHasOneEmptyLineAboveIt(self):
+        results = iter([(False, "Not yet."), (True, "Found it.")])
+        checklist = {"name": "bl", "title": "Blank lines", "program": "bl.py",
+                     "purpose": "Purpose.", "sections": [
+                         {"title": "A", "items": [
+                             {"id": "A1", "title": "a", "steps": [
+                                 {"do": "Please look.", "expect": "A light."},
+                                 {"do": "Please install it.",
+                                  "verify": lambda: next(results)}]}]},
+                         {"title": "B", "needs": "probe plate", "items": [
+                             {"id": "B1", "title": "b", "skipIf": lambda: "Not here.",
+                              "steps": [{"do": "Never shown."}]},
+                             {"id": "B2", "title": "b",
+                              "auto": lambda: ("pass", "All in place.")}]}]}
+        seen = []   # (prompt, the lines shown before it)
+        self.run_(["", "", "", "", "p", "", "", ""], checklist=checklist,
+                  onAsk=lambda prompt: seen.append((prompt, list(self.output))))
+        pressEnter = [(prompt, lines) for prompt, lines in seen if "Press Enter" in prompt]
+        for prompt, lines in pressEnter:
+            self.assertEqual(lines[-1], "", prompt)      # an empty line just above ...
+            self.assertNotEqual(lines[-2], "", prompt)   # ... and only one
+        above = [(prompt, lines[-2]) for prompt, lines in pressEnter]
+        notice = qaRunner.STEP_NOTICE.format(label="(bl.py) S1")
+        self.assertEqual(above, [
+            # The S1 opening: the last line of the step-number notice.
+            (qaRunner.START_PROMPT,
+             "    " + textwrap.wrap(notice, qaRunner.WIDTH - 4)[-1]),
+            (qaRunner.CONTINUE_PROMPT, "    You should see: A light."),   # after an expect
+            (qaRunner.CONTINUE_PROMPT, "    Please install it."),
+            (qaRunner.RECHECK_PROMPT, "    Not yet."),                    # a verify's recheck
+            (qaRunner.BODY + qaRunner.NEEDS_PROMPT, "    The next 2 tests need: probe plate"),
+            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as skipped."),  # Not needed
+            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as passed."),   # Checked
+        ])
+        self.assertIn("    Not needed: Not here.", self.output)
+        self.assertIn("    Checked for you: All in place.", self.output)
+        # The "How did it go?" answer prompt is left as it was.
+        answerPrompt = [lines for prompt, lines in seen if "How did it go?" in prompt][0]
+        self.assertEqual(answerPrompt[-1], "    Found it.")
+
+    def testKeyModePrintsTheEmptyLineThroughOut(self):
+        output = []
+        runner = qaRunner.Runner(CHECKLIST, resultsDir=self.directory, out=output.append,
+                                 styled=False)
+        keys = mock.patch.multiple(qaRunner, keyboardIsTerminal=lambda: True,
+                                   readKey=mock.Mock(side_effect=["\r", "\r", "p"]))
+        with keys, redirect_stdout(io.StringIO()) as shown:
+            runner.out("You should see: it.")
+            self.assertEqual(runner.askKey(qaRunner.CONTINUE_PROMPT), "")
+            self.assertEqual(output, ["You should see: it.", ""])
+            self.assertFalse(runner.lastBlank)   # the prompt is on screen now
+            runner.out("")                       # already an empty line: no second one
+            runner.askKey(qaRunner.CONTINUE_PROMPT)
+            self.assertEqual(output, ["You should see: it.", "", ""])
+            runner.out("Done.")                  # answer prompts get no empty line
+            runner.choose(qaRunner.ITEM_PROMPT, qaRunner.ITEM_WORDS)
+            self.assertEqual(output[-1], "Done.")
+        self.assertTrue(shown.getvalue().startswith(qaRunner.CONTINUE_PROMPT))
 
 
 class CalibrateEvidenceTests(unittest.TestCase):
@@ -978,6 +1101,29 @@ class ChecklistSanityTests(unittest.TestCase):
                          ["Before you start", "Full calibration", "Z limit (jog)",
                           "Z limit: power cycle and reset", "Z limit (jog, on the spoilboard)",
                           "Z limit (probe)"])
+
+    def testJogOpeningSteps(self):
+        # The intro: the console setup, then the two notes as one step.
+        intro = qa_jog.CHECKLIST["intro"]
+        self.assertEqual(len(intro), 2)
+        self.assertEqual(intro[0]["do"],
+                         evidence.consoleSteps("jog.py", qa_jog.REPO)[0]["do"])
+        self.assertIn("source .venv/bin/activate", intro[0]["run"])
+        safety, homes = intro[1]["do"].split("\n\n")
+        self.assertIn("E-stop button", safety)
+        self.assertTrue(homes.startswith("Every jog.py run homes the machine first"))
+        self.assertIn("--home", homes)
+        self.assertEqual(set(intro[1]), {"do"})
+
+    def testJogH1IntroductionIsItsOwnStep(self):
+        h1 = [item for _, item in qaRunner.flatten(qa_jog.CHECKLIST) if item["id"] == "H1"][0]
+        first, second = h1["steps"]
+        self.assertEqual(set(first), {"do"})   # the introduction only
+        self.assertTrue(first["do"].startswith("Holding a key jogs until you let go."))
+        self.assertIn("Jog aborted. MPos:", first["do"])
+        self.assertTrue(second["do"].startswith("Please read all of this first"))
+        self.assertNotIn("Holding a key", second["do"])
+        self.assertEqual(second["run"], qa_jog.JOG)
 
     def testProbeItemsAreMarked(self):
         probe = [s for s in qa_calibrate.CHECKLIST["sections"] if s["title"] == "Z limit (probe)"][0]

@@ -43,17 +43,19 @@ def inGroupNow():
 def startingPoint():
     """S1: evdev missing and not in the group, or what is already in place."""
     evdev, group = evdevInVenv(), listed()
+    about = ("The next tests check how jog.py helps you set up keyboard jog. They need "
+             "evdev to be missing and you not to be in the 'input' group yet. ")
     if not evdev and not group:
-        return qaRunner.PASS, ("evdev isn't installed in the venv, and you aren't in the "
-                               "'input' group: a clean starting point.")
+        return qaRunner.PASS, about + ("evdev isn't installed in the venv, and you aren't in "
+                                       "the 'input' group: a clean starting point.")
     found = []
     if evdev:
         found.append("evdev is already installed in the venv")
     if group:
         found.append("you're already listed in the 'input' group" +
                      ("" if inGroupNow() else " (from your next login)"))
-    return qaRunner.SKIP, ("Not a clean starting point: " + " and ".join(found) + ". "
-                           "I'll skip the tests that need them missing.")
+    return qaRunner.SKIP, (about + "Not a clean starting point: " + " and ".join(found) +
+                           ". I'll skip the tests that need them missing.")
 
 
 def evdevInstalled():
@@ -78,11 +80,13 @@ def loggedInAgain():
 
 # -- step helpers -------------------------------------------------------------
 
-def jogStep(actions, expect, command=JOG):
+def jogStep(actions, expect, command=JOG, intro=None):
     """One run of jog.py.  Everything to do in jog mode is listed up front,
-    because jog mode captures the keyboard until Enter or Esc."""
+    because jog mode captures the keyboard until Enter or Esc.  intro, if
+    given, is a paragraph shown first (what this group of tests is about)."""
     return {
-        "do": "Please read all of this first, because jog mode captures the keyboard. "
+        "do": (intro + "\n\n" if intro else "") +
+              "Please read all of this first, because jog mode captures the keyboard. "
               "In the second console, start jog.py:",
         "run": command,
         "actions": [evidence.JOG_MODE_STARTS] + actions +
@@ -107,16 +111,13 @@ CHECKLIST = {
                 "operation."),
     "intro": evidence.consoleSteps("jog.py", REPO, qaRunner.shortPath(REPO)) + [
         {"do": "Please make sure the spindle is off and the bit is well clear of the "
-               "spoilboard, and keep a hand near the E-stop button throughout."},
-        {"do": "Every jog.py run homes the machine first, because connecting resets this "
+               "spoilboard, and keep a hand near the E-stop button throughout.\n\n"
+               "Every jog.py run homes the machine first, because connecting resets this "
                "controller. That's why each command here uses --home."},
     ],
     "sections": [
         {
             "title": "Setup",
-            "intro": ("These test how jog.py helps you set up keyboard jog. They need "
-                      "evdev to be missing and you not to be in the 'input' group yet; "
-                      "I'll check that for you and skip what doesn't apply."),
             "items": [
                 {
                     "id": "S1",
@@ -223,19 +224,29 @@ CHECKLIST = {
         },
         {
             "title": "Hold-to-jog",
-            "intro": ("Holding a key jogs until you let go. Homed, the 6060 is at "
-                      f"{HOME} ($130=622, $131=605, $27=3). jog.py prints the machine "
-                      "position once, when you leave jog mode: \"Jog accepted. MPos: "
-                      "...\" after Enter, \"Jog aborted. MPos: ...\" after Esc."),
             "items": [
                 {
                     "id": "H1",
                     "title": "The two lines that start jog mode",
-                    "steps": [jogStep(
-                        ["Check that the two lines it prints are exactly as shown above.",
-                         "Press Enter."],
-                        "The two lines exactly as shown above, then \"Jog accepted. MPos: "
-                        f"{HOME}\".")],
+                    "steps": [
+                        {"do": "Holding a key jogs until you let go. Homed, the 6060 is at "
+                               f"{HOME} ($130=622, $131=605, $27=3). While you jog, jog.py "
+                               "shows the position live, with the limits and how far you "
+                               "are from each. When you leave jog mode it prints \"Jog "
+                               "accepted. MPos: ...\" after Enter, or \"Jog aborted. MPos: "
+                               "...\" after Esc."},
+                        jogStep(
+                            ["Check that the two lines it prints are exactly as shown above.",
+                             "Under them, check the position block: X, Y and Z with their "
+                             "low and high limits and the distance to each, updating as the "
+                             "machine moves.",
+                             "Press Enter."],
+                            "The two lines exactly as shown above. A block with X "
+                            f"{HOME.split()[0][1:]}, Y {HOME.split()[1][1:]}, Z "
+                            f"{HOME.split()[2][1:]}, \"at limit\" at the home end of each axis, "
+                            "and State: Idle. After Enter: \"Jog accepted. MPos: "
+                            f"{HOME}\"."),
+                    ],
                 },
                 {
                     "id": "H2",
@@ -348,8 +359,6 @@ CHECKLIST = {
         },
         {
             "title": "Taps",
-            "intro": ("A tap is an arrow released within 250 ms; it steps 0.1 mm. With 160 "
-                      "steps/mm, positions move in whole motor steps of 0.00625 mm."),
             "items": [
                 {
                     "id": "T1",
@@ -357,7 +366,10 @@ CHECKLIST = {
                     "steps": [jogStep(
                         ["Tap Right once (a quick press and release).", "Press Enter."],
                         "A tiny move, then \"Jog accepted. MPos: X-618.900 Y-602.000 "
-                        "Z-3.000\".")],
+                        "Z-3.000\".",
+                        intro="Now taps. A tap is an arrow released within 250 ms; it "
+                              "steps 0.1 mm. With 160 steps/mm, positions move in whole "
+                              "motor steps of 0.00625 mm.")],
                 },
                 {
                     "id": "T2",
@@ -471,7 +483,6 @@ CHECKLIST = {
         },
         {
             "title": "Keyboard capture",
-            "intro": "While jog mode is on, jog.py should have the keyboard to itself.",
             "items": [
                 {
                     "id": "K1",
@@ -481,7 +492,9 @@ CHECKLIST = {
                          "and leave the mouse over it.", "Jog with the arrows.",
                          "Press Enter."],
                         "The machine jogs; the other window doesn't scroll and nothing is "
-                        "typed into it.")],
+                        "typed into it.",
+                        intro="While jog mode is on, jog.py should have the keyboard to "
+                              "itself.")],
                 },
                 {
                     "id": "K2",
