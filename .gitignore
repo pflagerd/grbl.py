@@ -5,3 +5,5 @@
 /.awb/
 __pycache__
 *.kate-swp
+# Manual QA results (qa/qaRunner.py): the owner's notes, shared only by choice
+/qa/results/
