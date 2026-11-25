@@ -736,10 +736,12 @@ class Runner:
                 return end
 
     def showItem(self, index):
-        section, item = self.items[index]
+        """The notes that sit above a test's steps, on every screen of it: Needs,
+        Safety, where, and what it was answered last time.  No separator line
+        and no title: the operator goes by the S number, and the title is kept
+        for the results files."""
+        _, item = self.items[index]
         self.gap()
-        self.out("-" * self.width())
-        self.say(item["title"])
         self.field("Needs", self.resolve(item.get("needs")))
         self.field("Safety", self.resolve(item.get("safety")))
         if item.get("where"):
@@ -820,7 +822,7 @@ class Runner:
             label = self.label(owner, index)
             done, message = step["already"]() if step.get("already") else (False, "")
             if self.freshScreen() and header:
-                header()   # the test's title and safety note, on every screen
+                header()   # the test's Needs and Safety notes, on every screen
             self.gap()
             self.say(label, HEAD, LABEL)
             self.out("")

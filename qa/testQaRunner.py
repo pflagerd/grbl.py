@@ -375,9 +375,10 @@ class AnswerTests(RunnerTestCase):
     def testItemDisplay(self):
         self.run_(["", "q"])
         text = self.text()
-        for expected in ("\nAlpha\n", "S1:", "  Do alpha.", "    python a.py",
+        for expected in ("S1:", "  Do alpha.", "    python a.py",
                          "  You should see: Alpha happens."):
             self.assertIn(expected, text)
+        self.assertNotIn("\nAlpha\n", text)   # the test's title isn't shown
         self.assertNotIn("Section", text)   # sections aren't shown
         self.assertNotIn("(First)", text)
 
@@ -526,7 +527,8 @@ class QuitResumeTests(RunnerTestCase):
     def testResumeMidSectionStartsAtTheFirstUnansweredItem(self):
         self.run_(["", "p", "q"])
         self.run_(["y", "q"])
-        self.assertIn("Beta | pipe\n\nS2:", self.text())
+        self.assertIn("\n\nS2:\n\n    Do beta.", self.text())
+        self.assertNotIn("Beta | pipe", self.text())   # titles stay in the results files
         self.assertNotIn("Section", self.text())
 
     def testDecliningResumeStartsANewFile(self):
@@ -795,10 +797,9 @@ class StyleTests(RunnerTestCase):
         self.assertIn("    Already done: It's open.", doneScreen)
         self.assertNotIn("(demo.py) S2:", screenWith("(demo.py) S3:"))
         # Every step starts a fresh screen once the one before was answered, and
-        # a later step of a test repeats the test's title and safety note.
+        # a later step of a test repeats the test's safety note.
         second = screenWith("(demo.py) S4:")
         self.assertNotIn("(demo.py) S3:", second)
-        self.assertIn("s", second)          # the test's title
         self.assertIn("  Safety: Hand near reset.", second)
         # Nothing else is styled, prompts included.
         everything = "".join(line for line in out if line != qaRunner.CLEAR) + \
@@ -806,6 +807,25 @@ class StyleTests(RunnerTestCase):
         self.assertNotIn("\033", everything)
         self.assertIn(qaRunner.CONTINUE_PROMPT, self.script.prompts)
         self.assertIn(qaRunner.START_PROMPT, self.script.prompts)
+
+    def testNoSeparatorOrTitleOnAnyScreen(self):
+        # The operator goes by S numbers: no dashed line and no test title on
+        # any screen, but the Needs and Safety notes still sit above the step.
+        checklist = self.checklist()
+        item = checklist["sections"][0]["items"][0]
+        item.update(title="Unmistakable title", needs="A probe plate.",
+                    safety="Hand near reset.")
+        self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True)
+        out = self.output
+        for line in out:
+            self.assertNotIn("Unmistakable title", line)
+            self.assertFalse(line.strip() and set(line.strip()) == {"-"}, repr(line))
+        starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR]
+        for label in ("(demo.py) S2:", "(demo.py) S3:"):
+            at = out.index(label)
+            screen = out[max(i for i in starts if i < at) + 1:at + 1]
+            self.assertEqual(screen, ["  Needs:  A probe plate.", "  Safety: Hand near reset.",
+                                      "", label])
 
     def testWrapsToTheTerminalsFullWidth(self):
         checklist = self.checklist()
