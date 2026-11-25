@@ -491,6 +491,9 @@ class FlowTestBase(unittest.TestCase):
                                       expectedSettings={"$23": "3", "$132": "109.000"})
         self.profile.save(self.profilePath)
         self.bitsPath = os.path.join(self.directory, "bits.json")
+        # The Grbl-switched spindle is stored, so these flows never ask for it.
+        self.machinePath = os.path.join(self.directory, "6060.machine.json")
+        ssb.writeJsonAtomically(self.machinePath, {"schemaVersion": 1, "spindleControl": "grbl"})
         self.output = []
 
     def run_flow(self, script, arguments=("--diameter", "35"), grbl=None, positions=None,
@@ -825,6 +828,22 @@ class PassLoopTests(FlowTestBase):
         self.assertEqual(after[m3 + 1], "G4 P3")      # restarted with the dwell
         self.assertLess(m3, after.index("G53 G1 Z-80.600 F50"))
 
+    def testResetStopsARunningSpindleFirst(self):
+        # A backstop: every pass already ends with M5, but if the spindle were
+        # running when the reset is accepted, M5 must still go before the write.
+        settings = dict(SETTINGS)
+        settings['$132'] = '80.200'
+        grbl = FakeGrbl(settings)
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options,
+                                  ask=Operator([("Reset $132", "y")]), out=self.output.append,
+                                  sleep=lambda seconds: None)
+        surfacing.choices['touch'] = TOUCH_Z
+        surfacing.spindleOn = True
+        self.assertTrue(surfacing.ensureZRoom(0.3))
+        self.assertEqual(grbl.events, ["M5", "$132=109.000"])
+        self.assertFalse(surfacing.spindleOn)
+
     def testCtrlCInTheSecondPassStillStops(self):
         grbl = FakeGrbl()
         grbl.interruptAt = "G53 G1 Z-80.600"
@@ -895,6 +914,134 @@ class SurfacedZLimitTests(FlowTestBase):
             ("Set the spoilboard Z limit", "n")])
         self.assertEqual(self.savedProfile(), before)
         self.assertFalse(os.path.exists(self.sidecarPath()))
+
+
+class SpindleControlTests(BitDirectoryTest):
+    def testAskedOnceThenSaved(self):
+        path = os.path.join(self.directory, "m.machine.json")
+        operator = Operator([("switched by Grbl (M3/M5) or by hand", "router"),   # not a choice
+                             ("switched by Grbl (M3/M5) or by hand", "man")])
+        output = []
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(ssb.resolveSpindleControl(None, path, operator, output.append),
+                             ("manual", "asked"))
+        with open(path) as jsonFile:
+            self.assertEqual(json.load(jsonFile), {"schemaVersion": 1, "spindleControl": "manual"})
+        # Read back without asking (an Operator with no script fails on any prompt).
+        self.assertEqual(ssb.resolveSpindleControl(None, path, Operator([]), output.append),
+                         ("manual", "saved"))
+
+    def testCommandLineWinsAndIsNotSaved(self):
+        path = os.path.join(self.directory, "m.machine.json")
+        ssb.writeJsonAtomically(path, {"schemaVersion": 1, "spindleControl": "manual"})
+        self.assertEqual(ssb.resolveSpindleControl("grbl", path, Operator([])),
+                         ("grbl", "command line"))
+        self.assertEqual(ssb.loadMachineRecord(path)["spindleControl"], "manual")
+        self.assertEqual(ssb.parseArguments(["--spindle-control", "manual"]).spindle_control,
+                         "manual")
+
+    def testShippedMachineFile(self):
+        record = ssb.loadMachineRecord(os.path.join(HERE, "profiles", "6060 ProverXL V1.machine.json"))
+        self.assertEqual(record["spindleControl"], "manual")
+        self.assertEqual(ssb.machinePath(os.path.join("profiles", "6060 ProverXL V1.json")),
+                         os.path.join("profiles", "6060 ProverXL V1.machine.json"))
+
+    def testNoDwellLineWithoutADwell(self):
+        self.assertNotIn("G4 P0", plan(dwell=0).gcode)
+        self.assertIn("M3 S10000", plan(dwell=0).gcode)     # still sent: harmless, standard
+
+
+class ManualSpindleFlowTests(FlowTestBase):
+    # Manual mode: no spindle-speed prompt, the router-on Enter before the first
+    # plunge, and no dwell.
+    PARAMETERS = [entry for entry in PARAMETERS if not entry[0].startswith("Spindle speed")]
+
+    def setUp(self):
+        super().setUp()
+        ssb.writeJsonAtomically(self.machinePath, {"schemaVersion": 1, "spindleControl": "manual"})
+
+    def recordedRun(self, script, grbl=None, expectException=None):
+        grbl = grbl or FakeGrbl()
+        operator = Operator(script)
+        seen = []
+
+        def ask(prompt, inputStream=None):
+            seen.append((prompt, list(grbl.lines)))
+            return operator(prompt)
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=ask,
+                                  out=self.output.append,
+                                  runJog=fakeJog(grbl, [CORNER1, CORNER2, TOUCH]),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with redirect_stdout(io.StringIO()):
+            if expectException:
+                with self.assertRaises(expectException):
+                    ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+            else:
+                ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+        self.assertEqual(operator.script, [], "not every scripted answer was used")
+        return grbl, surfacing, seen
+
+    def testRouterOnBeforeTheFirstPlungeAndNoDwell(self):
+        grbl, surfacing, seen = self.recordedRun(
+            START + self.PARAMETERS + FIRST_PASS + [("Switch the router ON now, then press Enter", ""),
+                                                    ("Another pass at -0.3 mm (total -0.6)", "y"),
+                                                    ("Another pass", "s"),
+                                                    ("Switch the router OFF now", "")] + END)
+        lines = grbl.lines
+        self.assertNotIn("G4 P3", lines)
+        self.assertFalse(any(line.startswith("G4") for line in lines))
+        self.assertEqual(lines.count("M3 S10000"), 2)        # still sent, once per pass
+        routerOn = [sent for prompt, sent in seen if prompt.startswith("Switch the router ON")]
+        self.assertEqual(len(routerOn), 1)                   # only before the first pass
+        sentBefore = routerOn[0]
+        self.assertEqual(sentBefore[-2:], ["G53 G0 Z-75.000", "M3 S10000"])   # lifted first
+        self.assertFalse(any(line.startswith("G53 G1") for line in sentBefore))
+        self.assertIn("G53 G1 Z-80.300 F50", lines)
+        self.assertIn("  (router still running -- switch it off if you'll be away)", self.output)
+        self.assertNotIn("  (spindle off; answering Y restarts it)", self.output)
+        self.assertIn("router keeps", self.text())
+        summary = next(line for line in self.output if line.startswith("  8. Spindle:"))
+        self.assertIn("control: manual (saved in 6060.machine.json)", summary)
+        self.assertEqual(surfacing.totalDepth, 0.6)
+
+    def testCtrlCSaysTheRouterIsStillRunning(self):
+        grbl = FakeGrbl()
+        grbl.interruptAt = "G53 G1 Y"
+        grbl, surfacing, seen = self.recordedRun(
+            START + self.PARAMETERS + FIRST_PASS + [("Switch the router ON now", "")],
+            grbl=grbl, expectException=KeyboardInterrupt)
+        self.assertIn(ssb.ROUTER_STILL_RUNNING, self.output)
+        self.assertIn("soft reset (Ctrl-X)", self.text())
+        self.assertNotIn("which also stops the spindle", self.text().split("!! Stopped")[-1])
+
+    def testFirstRunAsksAndSaves(self):
+        os.unlink(self.machinePath)
+        grbl, surfacing, seen = self.recordedRun(
+            [("Save this 35 mm bit", "n"), ("switched by Grbl (M3/M5) or by hand", "manual")]
+            + START[1:] + self.PARAMETERS + [("y to start", "q"), ("Press Enter to park", "")])
+        self.assertEqual(ssb.loadMachineRecord(self.machinePath)["spindleControl"], "manual")
+        self.assertIn("asked once, now saved", self.text())
+
+
+class GrblSpindleUnchangedTests(FlowTestBase):
+    def testGrblModeKeepsDwellAndAsksNoRouterQuestions(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass", "y"), ("Another pass", "s")]
+            + PARK + END)
+        self.assertEqual(grbl.lines.count("G4 P3"), 2)
+        self.assertFalse(any("router" in prompt.lower() for prompt in operator.prompts))
+        summary = next(line for line in self.output if line.startswith("  8. Spindle:"))
+        self.assertIn("control: grbl (saved in 6060.machine.json)", summary)
+
+    def testCommandLineOverridesTheSavedMode(self):
+        ssb.writeJsonAtomically(self.machinePath, {"schemaVersion": 1, "spindleControl": "manual"})
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + [("y to start", "q"), ("Press Enter to park", "")],
+            arguments=("--diameter", "35", "--spindle-control", "grbl"))
+        self.assertEqual(surfacing.spindleControl, "grbl")
+        self.assertEqual(ssb.loadMachineRecord(self.machinePath)["spindleControl"], "manual")
 
 
 class SafetyTests(FlowTestBase):

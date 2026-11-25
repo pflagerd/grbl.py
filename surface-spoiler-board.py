@@ -74,6 +74,12 @@ MINIMUM_BOARD = 1.0          # mm; the corners must be at least this far apart i
 MAX_LINE_LENGTH = 70         # characters; Grbl's line buffer is 80
 DEFAULT_RAPID = 2000.0       # mm/min if $110-$112 are missing (time estimate only)
 
+# How the spindle is switched, per machine (profiles/<name>.machine.json)
+SPINDLE_GRBL = "grbl"        # Grbl's M3/M5/S drive it (the 4030 ProverXL V2)
+SPINDLE_MANUAL = "manual"    # a router switched by hand; M3/M5/S do nothing (the 6060)
+SPINDLE_MODES = (SPINDLE_GRBL, SPINDLE_MANUAL)
+MACHINE_SUFFIX = ".machine.json"
+
 ZIGZAG = "zigzag"
 ONE_WAY = "one-way"
 PATTERNS = (ZIGZAG, ONE_WAY)
@@ -271,8 +277,9 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
 
     move('G0', Z=clearZ)                       # off the surface before the spindle starts
     gcode.append(f"M3 S{int(round(spindle))}")
-    gcode.append(f"G4 P{dwell:g}")
-    plan.seconds += dwell
+    if dwell:                                  # 0: a hand-switched router, already running
+        gcode.append(f"G4 P{dwell:g}")
+        plan.seconds += dwell
     move('G0', X=xStart, Y=lineYs[0])
     plunge()
     for index, y in enumerate(lineYs):
@@ -326,6 +333,10 @@ def loadBits(path):
 
 
 def saveBits(path, bits):
+    writeJsonAtomically(path, {"schemaVersion": 1, "bits": bits})
+
+
+def writeJsonAtomically(path, data):
     """Write atomically: a temp file in the same directory, then rename over the old file.
 
     A failure part-way leaves the old file as it was.  Indented, sorted keys, so
@@ -341,11 +352,11 @@ def saveBits(path, bits):
         umask = os.umask(0)
         os.umask(umask)
         mode = 0o666 & ~umask
-    handle, temporary = tempfile.mkstemp(prefix=".bits-", suffix=".json", dir=directory)
+    handle, temporary = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=directory)
     try:
         os.chmod(temporary, mode)
         with os.fdopen(handle, 'w') as jsonFile:
-            json.dump({"schemaVersion": 1, "bits": bits}, jsonFile, indent=2, sort_keys=True)
+            json.dump(data, jsonFile, indent=2, sort_keys=True)
             jsonFile.write('\n')
             jsonFile.flush()
             os.fsync(jsonFile.fileno())
@@ -354,6 +365,43 @@ def saveBits(path, bits):
         if os.path.exists(temporary):
             os.unlink(temporary)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Per-machine facts: profiles/<name>.machine.json
+# ---------------------------------------------------------------------------
+#
+# {"schemaVersion": 1, "spindleControl": "manual"}
+# A sidecar because MachineProfile drops keys it doesn't know, and
+# GrblController.py (where MachineProfile lives) belongs to another PR.  Not
+# the .zlimit.json sidecar: that one is calibrate.py's Z-limit record.
+
+def machinePath(profilePath):
+    return os.path.splitext(profilePath)[0] + MACHINE_SUFFIX
+
+
+def loadMachineRecord(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path) as jsonFile:
+        return json.load(jsonFile)
+
+
+def resolveSpindleControl(commandLine, path, ask, out=print):
+    """(mode, source).  --spindle-control wins (for this run only, not saved);
+    then the saved value; otherwise ask once and save the answer."""
+    if commandLine is not None:
+        return commandLine, 'command line'
+    record = loadMachineRecord(path)
+    if record.get('spindleControl') in SPINDLE_MODES:
+        return record['spindleControl'], 'saved'
+    answer = calibrate.askChoice(ask, "Is the spindle switched by Grbl (M3/M5) or by hand (e.g. a "
+                                      "router)? (grbl / manual): ", SPINDLE_MODES)
+    record.setdefault('schemaVersion', 1)
+    record['spindleControl'] = answer
+    writeJsonAtomically(path, record)
+    out(f"  Saved spindleControl={answer} in {path}; you won't be asked again.")
+    return answer, 'asked'
 
 
 def describeBit(name, entry):
@@ -552,7 +600,7 @@ def waitForIdle(grbl, timeout, sleep=time.sleep, clock=time.monotonic):
         sleep(0.5)
 
 
-def safeStop(grbl, out=print, sleep=time.sleep, clock=time.monotonic):
+def safeStop(grbl, out=print, sleep=time.sleep, clock=time.monotonic, manualSpindle=False):
     """After Ctrl-C or any error: stop motion and the spindle, and say what is left.
 
     Running (or held, or jogging): feed hold '!' decelerates to a stop without
@@ -580,10 +628,11 @@ def safeStop(grbl, out=print, sleep=time.sleep, clock=time.monotonic):
                 sleep(0.1)
             if state != 'Alarm':
                 grbl.softReset()
-                actions.append("soft reset (Ctrl-X), which also stops the spindle")
+                actions.append("soft reset (Ctrl-X)" if manualSpindle
+                               else "soft reset (Ctrl-X), which also stops the spindle")
         elif state == 'Idle':
             grbl.write(b'M5\n')
-            actions.append("M5 (spindle off)")
+            actions.append("M5 (Grbl's spindle output off)" if manualSpindle else "M5 (spindle off)")
         report = readStatus(grbl)
     except Exception as error:
         out(f"!! The safety stop itself failed: {error}.  Use the reset button or power switch.")
@@ -629,6 +678,15 @@ SAFETY_REMINDER = (
     "  - the double-sided tape must hold the plywood against SIDEWAYS force,\n"
     "    not just downward; press the corners down and check none lifts\n"
     "  - Ctrl-C stops it: feed hold, then reset, which also stops the spindle")
+SAFETY_REMINDER_MANUAL = SAFETY_REMINDER.replace(
+    "  - Ctrl-C stops it: feed hold, then reset, which also stops the spindle",
+    "  - Ctrl-C stops the MOTION (feed hold, then reset); the router keeps\n"
+    "    running until you switch it off by hand")
+ROUTER_STILL_RUNNING = (
+    "!! ================================================================\n"
+    "!! THE ROUTER IS STILL RUNNING.  Switch it OFF by hand now.\n"
+    "!! Grbl does not control it, so this script cannot stop it.\n"
+    "!! ================================================================")
 
 
 class Surfacing:
@@ -654,8 +712,25 @@ class Surfacing:
         self.passesDone = 0
         self.lastDepth = None
         self.spindleOn = False   # True from a pass's M3 until its M5
+        self.machinePath = machinePath(profilePath)
+        self.spindleControl, self.spindleSource = SPINDLE_GRBL, None
+        self.routerOn = False    # manual mode: the operator said the router is on
 
     # --- parameters ---------------------------------------------------------
+
+    @property
+    def manual(self):
+        return self.spindleControl == SPINDLE_MANUAL
+
+    def describeSpindleControl(self):
+        source = {'command line': "from --spindle-control",
+                  'saved': f"saved in {os.path.basename(self.machinePath)}",
+                  'asked': "asked once, now saved"}.get(self.spindleSource, "")
+        if self.manual:
+            return (f"manual ({source}): a router switched by hand.  M3/M5/S are still sent but "
+                    "do nothing; no spin-up dwell; you switch it on before the first plunge")
+        return (f"grbl ({source}): M3 S + a {SPIN_UP_SECONDS:g} s spin-up before each pass, "
+                "M5 after it")
 
     def bitEntry(self):
         return self.choices['bit'][1]
@@ -711,7 +786,7 @@ class Surfacing:
         if name == 'plunge':
             return f"{value:g} mm/min ({reason})"
         if name == 'spindle':
-            return f"S{int(round(value))} ({reason})"
+            return f"S{int(round(value))} ({reason}); control: {self.describeSpindleControl()}"
         if name == 'depth':
             after = round(self.totalDepth + value, 3)
             return (f"{value:g} mm ({reason}); total after this pass {after:.3f} mm "
@@ -737,7 +812,8 @@ class Surfacing:
             self.sources['pattern'] = 'given'
         else:
             value, source = self.derived(name)
-            if source != 'command line':
+            if source != 'command line' and not (name == 'spindle' and self.manual):
+                # (manual mode: the S word is sent but the router ignores it; don't ask)
                 label = {'depth': "Depth per pass in mm", 'feed': "Feed in mm/min",
                          'plunge': "Plunge feed in mm/min", 'spindle': "Spindle speed (S word)",
                          'stepover': "Stepover in mm", 'clearance': "Clearance in mm"}[name]
@@ -819,7 +895,7 @@ class Surfacing:
                           self.choices['touch'], totalAfter, passDepth, self.choices['clearance'],
                           self.choices['pattern'], jogModule.softLimitBounds(settings),
                           self.choices['feed'], self.choices['plunge'], self.choices['spindle'],
-                          rapidRates(settings))
+                          rapidRates(settings), dwell=0 if self.manual else SPIN_UP_SECONDS)
 
     def summary(self):
         """The change-your-mind loop.  Returns once the operator answers y."""
@@ -943,7 +1019,17 @@ class Surfacing:
         self.out(f"  Cutting: {len(plan.gcode)} lines, about {formatDuration(plan.seconds)}.  "
                  "Ctrl-C stops it.")
         self.spindleOn = True   # from the M3; the pass's own M5 turns it off
-        streamGcode(self.grbl, plan.gcode, timeout, self.out, self.clock)
+        lines = plan.gcode
+        if self.manual and not self.routerOn:
+            # Lift off the plywood first (and send the harmless M3), then wait for
+            # the operator: cutting must not start until the router is running.
+            split = lines.index(next(line for line in lines if line.startswith("M3"))) + 1
+            streamGcode(self.grbl, lines[:split], timeout, self.out, self.clock)
+            waitForIdle(self.grbl, timeout, self.sleep, self.clock)
+            self.ask("Switch the router ON now, then press Enter. ")
+            self.routerOn = True
+            lines = lines[split:]
+        streamGcode(self.grbl, lines, timeout, self.out, self.clock)
         waitForIdle(self.grbl, timeout, self.sleep, self.clock)   # Idle: the M5 has run
         self.spindleOn = False
 
@@ -961,7 +1047,8 @@ class Surfacing:
                 if cap - self.totalDepth < 0.001:
                     self.out("  The total-depth cap is reached.")
                     return None
-            self.out("  (spindle off; answering Y restarts it)")
+            self.out("  (router still running -- switch it off if you'll be away)" if self.manual
+                     else "  (spindle off; answering Y restarts it)")
             answer = self.askPassDepth(depth, allowSame=fits)
             if answer is None:
                 return None
@@ -1004,10 +1091,12 @@ class Surfacing:
             plan = self.plan(depth)
             number = self.passesDone + 1
             if number == 1:
-                self.out(SAFETY_REMINDER)
+                self.out(SAFETY_REMINDER_MANUAL if self.manual else SAFETY_REMINDER)
+                then = ("you switch the router on, then it cuts" if self.manual
+                        else "the spindle starts, then it cuts")
                 self.ask(f"Pass 1: -{depth:g} mm (total -{totalAfter:g}), {len(plan.lineYs)} lines, "
-                         f"about {formatDuration(plan.seconds)}.  The bit lifts, the spindle starts, "
-                         "then it cuts.  Press Enter to start. ")
+                         f"about {formatDuration(plan.seconds)}.  The bit lifts, {then}.  "
+                         "Press Enter to start. ")
             else:
                 self.out(f"  Pass {number}: -{depth:g} mm (total -{totalAfter:g}), about "
                          f"{formatDuration(plan.seconds)}.")
@@ -1016,7 +1105,8 @@ class Surfacing:
             self.passesDone += 1
             self.lastDepth = depth
             self.out(f"  Pass {number} done: {self.totalDepth:.3f} mm removed in total.  The bit is "
-                     "up at clearance and the spindle is stopped.")
+                     "up at clearance" + (" (the router is still running)." if self.manual
+                                          else " and the spindle is stopped."))
             depth = self.askExtraPass(depth)
             if depth is None:
                 return
@@ -1027,8 +1117,13 @@ class Surfacing:
         bounds = jogModule.softLimitBounds(settings)
         top = round(bounds['Z'][1], 3)
         clearZ = min(round(self.choices['touch'] + self.choices['clearance'], 3), top)
-        self.ask("Press Enter to park: spindle off, Z up to the top, then over the front-left "
-                 "corner. ")
+        if self.manual and self.routerOn:
+            self.ask("Switch the router OFF now.  Then press Enter to park: Z up to the top, then "
+                     "over the front-left corner. ")
+            self.routerOn = False
+        else:
+            self.ask("Press Enter to park: spindle off, Z up to the top, then over the front-left "
+                     "corner. ")
         lines = ["M5", f"G53 G0 Z{clearZ:.3f}", f"G53 G0 Z{top:.3f}",
                  f"G53 G0 X{x0:.3f} Y{y0:.3f}"]
         streamGcode(self.grbl, lines, 300, self.out, self.clock)
@@ -1080,6 +1175,8 @@ class Surfacing:
                               "it.  Fix that (see above) and run this again.")
         try:
             self.fill('bit')
+            self.spindleControl, self.spindleSource = resolveSpindleControl(
+                self.options.spindle_control, self.machinePath, self.ask, self.out)
             self.out("\nThe motors are released between moves ($1=25), so the knob turns them, but "
                      "Grbl can't see it.  Use the knob NOW, before homing, for a rough move if you "
                      "like.  After homing, move only by jog: a knob turn would make Grbl's position, "
@@ -1115,7 +1212,12 @@ def runWithSafeStop(surfacing, home):
             raise   # stopped before anything could move; nothing to stop
         surfacing.out(f"\n!! {type(error).__name__}: {error}" if str(error)
                       else f"\n!! {type(error).__name__}")
-        safeStop(surfacing.grbl, surfacing.out, surfacing.sleep, surfacing.clock)
+        safeStop(surfacing.grbl, surfacing.out, surfacing.sleep, surfacing.clock,
+                 manualSpindle=surfacing.manual)
+        if surfacing.manual and surfacing.routerOn:
+            surfacing.out(ROUTER_STILL_RUNNING)
+        elif surfacing.manual:
+            surfacing.out("!! If you switched the router on, switch it OFF by hand: Grbl can't.")
         raise
 
 
@@ -1140,6 +1242,9 @@ def parseArguments(argv=None):
     parser.add_argument("--overrun", type=float, metavar="MM",
                         help="past each X edge; default the bit radius")
     parser.add_argument("--max-total-depth", type=float, default=MAX_TOTAL_DEPTH, metavar="MM")
+    parser.add_argument("--spindle-control", choices=SPINDLE_MODES,
+                        help="grbl: M3/M5 switch the spindle; manual: a router switched by hand "
+                             "(default: saved per machine, asked once)")
     parser.add_argument("--one-way", action="store_true",
                         help="cut every line in +X, lifting to clearance for the return")
     arguments = parser.parse_args(argv)
