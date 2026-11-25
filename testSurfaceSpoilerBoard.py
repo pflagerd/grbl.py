@@ -20,11 +20,13 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import types
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+import calibrate
 import jog
 from GrblController import MachineProfile
 
@@ -391,6 +393,7 @@ class FakeGrbl:
         self.interruptAt = None  # substring: raise KeyboardInterrupt when that line is written
         self.errorAt = None      # substring: answer error:15 to that line
         self.homed = 0
+        self.events = []         # every send() and streamed line, in order
 
     # --- GrblController surface ---
     def getSettings(self):
@@ -398,6 +401,7 @@ class FakeGrbl:
 
     def send(self, gcode):
         self.sent.append(gcode)
+        self.events.append(gcode)
         match = re.match(r'(\$\d+)=(.*)$', gcode)
         if match:
             self.settings[match.group(1)] = f"{float(match.group(2)):.3f}"
@@ -434,6 +438,7 @@ class FakeGrbl:
             return
         line = data.decode().strip()
         self.lines.append(line)
+        self.events.append(line)
         if self.interruptAt and self.interruptAt in line:
             self.state = 'Run'
             raise KeyboardInterrupt()
@@ -473,7 +478,8 @@ PARAMETERS = [("Stepover in mm [14,", ""), ("Depth per pass in mm [0.3,", ""),
               ("Spindle speed (S word) [10000,", ""), ("Clearance in mm [5,", "")]
 FIRST_PASS = [("y to start", "y"), ("Pass 1: -0.3 mm (total -0.3)", "")]
 PARK = [("Press Enter to park", "")]
-END = [("Save this 35 mm bit and these settings", "n"), ("Set it again now", "n")]
+END = [("Save this 35 mm bit and these settings", "n"),
+       ("Set the spoilboard Z limit from the surfaced top? [Y/n]", "n")]
 
 
 class FlowTestBase(unittest.TestCase):
@@ -578,9 +584,8 @@ class FlowTests(FlowTestBase):
         # Cap 0.5: 0.3, then a 0.3 is refused; change to 0.2; then the cap is reached.
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + FIRST_PASS
-            + [("Another pass at -0.3 mm (total -0.6)", ""), ("Change the depth, or stop", "c"),
-               ("Depth for the next pass", "0.2"), ("Pass 2: -0.2 mm (total -0.5)", ""),
-               ("Another pass at -0.2 mm (total -0.7)", "y")] + PARK + END,
+            + [("Change the depth, or stop", "c"), ("Depth for the next pass", "0.2")]
+            + PARK + END,
             arguments=("--diameter", "35", "--max-total-depth", "0.5"))
         self.assertEqual(surfacing.totalDepth, 0.5)
         self.assertEqual(surfacing.passesDone, 2)
@@ -639,34 +644,257 @@ class SummaryTests(FlowTestBase):
 
 
 class ZRoomFlowTests(FlowTestBase):
-    def shallow(self):
+    def shallow(self, z132='80.200'):
         settings = dict(SETTINGS)
-        settings['$132'] = '80.200'      # fence z=-80.2: a 0.3 mm pass from -80 needs -80.3
+        settings['$132'] = z132          # fence z=-80.2: a 0.3 mm pass from -80 needs -80.3
         return FakeGrbl(settings)
 
-    def testResetOfferedAndAccepted(self):
+    def savedProfile(self):
+        with open(self.profilePath) as jsonFile:
+            return json.load(jsonFile)
+
+    def testResetGoesToWorkAreaZNotTheCalibratedValue(self):
+        # The profile's calibrated $132 is a (shallow) spoilboard limit; the reset
+        # must go to the full travel instead, and must not touch the profile.
+        self.profile.expectedSettings["$132"] = "80.200"
+        self.profile.save(self.profilePath)
         grbl, surfacing, operator = self.run_flow(
-            START + PARAMETERS + [("y to start", "y"), ("Reset $132", "y"), ("Pass 1", ""),
-                                  ("Another pass", "s")] + PARK + END, grbl=self.shallow())
+            START + PARAMETERS + [("y to start", "y"),
+                                  ("Reset $132 to the full Z travel, 109.000", "y"),
+                                  ("Pass 1", ""), ("Another pass", "s")] + PARK + END,
+            grbl=self.shallow())
         self.assertIn("Z room: NOT enough", self.text())
         self.assertIn("Not enough Z room: this pass cuts down to z=-80.300", self.text())
         self.assertIn("$132=109.000", grbl.sent)
+        self.assertEqual(grbl.settings['$132'], '109.000')
         self.assertEqual(surfacing.passesDone, 1)
+        self.assertEqual(self.profile.expectedSettings["$132"], "80.200")
+        self.assertEqual(self.savedProfile()["expectedSettings"]["$132"], "80.200")
+        self.assertIn("not the profile's calibrated $132", " ".join(operator.prompts))
 
-    def testResetDeclined(self):
+    def testResetDeclinedGoesBackToTheSummary(self):
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + [("y to start", "y"), ("Reset $132", "n"),
-                                  ("Change the depth, or stop", "s")] + PARK, grbl=self.shallow())
+                                  ("y to start", "q")] + PARK, grbl=self.shallow())
+        self.assertIn("Back to the summary", self.text())
         self.assertFalse(any(line.startswith("M3") for line in grbl.lines))
-        self.assertNotIn("$132=109.000", grbl.sent)
+        self.assertEqual([gcode for gcode in grbl.sent if gcode.startswith("$132=")], [])
 
     def testResetNotEnough(self):
-        self.profile.expectedSettings["$132"] = "80.200"   # the profile itself is shallow
+        self.profile.workAreaZ = 80.25   # even the "full travel" (-80.25) is above -80.3
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + [("y to start", "y"), ("Reset $132", "y"),
-                                  ("Change the depth, or stop", "s")] + PARK, grbl=self.shallow())
+                                  ("y to start", "q")] + PARK, grbl=self.shallow())
         self.assertIn("Still not enough", self.text())
         self.assertEqual(surfacing.passesDone, 0)
+
+    def testRoomCheckedBeforeEachPassForThatPassesBottom(self):
+        # $132 80.5 fences z=-80.5 (-80.4 with the margin): pass 1 (to -80.3) fits
+        # with no offer; pass 2 (to -80.6) gets the offer, after its "Another pass?".
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "y"),
+                                               ("Reset $132", "y"), ("Another pass", "s")]
+            + PARK + END, grbl=self.shallow('80.500'))
+        self.assertIn("Z room: ok", self.text())
+        self.assertIn("Not enough Z room: this pass cuts down to z=-80.600", self.text())
+        prompts = operator.prompts
+        firstAnother = next(i for i, p in enumerate(prompts) if p.startswith("Another pass"))
+        reset = next(i for i, p in enumerate(prompts) if "Reset $132" in p)
+        self.assertGreater(reset, firstAnother)
+        self.assertEqual(surfacing.totalDepth, 0.6)
+
+    def testDeclinedResetLaterOffersAShallowerPass(self):
+        # After pass 1 the reset is declined: a shallower pass that fits, then stop.
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "y"),
+                                               ("Reset $132", "n"), ("Change the depth, or stop", "c"),
+                                               ("Depth for the next pass", "0.1"),
+                                               ("Another pass", "s")] + PARK + END,
+            grbl=self.shallow('80.500'))
+        self.assertEqual(surfacing.totalDepth, 0.4)
+        self.assertIn("G53 G1 Z-80.400 F50", grbl.lines)
+
+
+class PassLoopTests(FlowTestBase):
+    def runWith(self, ask, grbl):
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=ask,
+                                  out=self.output.append,
+                                  runJog=fakeJog(grbl, [CORNER1, CORNER2, TOUCH]),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with redirect_stdout(io.StringIO()):
+            ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+        return surfacing
+
+    def testSpindleOffAtEveryPromptAndRestartedForEveryPass(self):
+        grbl = FakeGrbl()
+        operator = Operator(START + PARAMETERS + FIRST_PASS + [
+            ("Another pass at -0.3 mm (total -0.6)", "y"),
+            ("Another pass at -0.3 mm (total -0.9)", ""),        # Enter is Y
+            ("Another pass at -0.3 mm (total -1.2)", "stop")] + PARK + END)
+        seen = []
+
+        def ask(prompt, inputStream=None):
+            seen.append((prompt, list(grbl.lines)))
+            return operator(prompt)
+        surfacing = self.runWith(ask, grbl)
+        self.assertEqual(operator.script, [], "an unscripted prompt (an extra Enter?) or a missing one")
+        asked = [sent for prompt, sent in seen if prompt.startswith("Another pass")]
+        self.assertEqual(len(asked), 3)                           # one after every pass
+        for sent in asked:
+            self.assertEqual(sent[-2:], ["G53 G0 Z-75.000", "M5"], "lifted, then spindle off")
+        self.assertEqual(self.output.count("  (spindle off; answering Y restarts it)"), 3)
+        # Every pass, including the later ones, starts the spindle with the dwell
+        # before its plunge.
+        lines = grbl.lines
+        starts = [i for i, line in enumerate(lines) if line == "M3 S10000"]
+        self.assertEqual(len(starts), 3)
+        for start, depth in zip(starts, ("80.300", "80.600", "80.900")):
+            self.assertEqual(lines[start + 1], "G4 P3")
+            self.assertLess(start, lines.index(f"G53 G1 Z-{depth} F50"))
+        self.assertEqual(surfacing.totalDepth, 0.9)
+        # Only the first pass asked for an Enter.
+        self.assertEqual(sum("Press Enter to start." in prompt for prompt, _ in seen), 1)
+
+    def pipe(self):
+        reader, writer = os.pipe()
+        readFile = os.fdopen(reader, 'rb', buffering=0)
+        self.addCleanup(readFile.close)
+        return readFile, writer
+
+    def testWaitsThroughALongSilenceThenRunsTheNextPass(self):
+        import threading
+        grbl = FakeGrbl()
+        readFile, writer = self.pipe()
+        operator = Operator(START + PARAMETERS + FIRST_PASS + [
+            ("Another pass at -0.3 mm (total -0.9)", "s")] + PARK + END)
+        waited = {}
+
+        def answerLater():
+            time.sleep(1.0)                    # a long pause by test standards
+            os.write(writer, b"y\n")
+            os.close(writer)
+
+        def ask(prompt, inputStream=None):
+            if prompt.startswith("Another pass at -0.3 mm (total -0.6)"):
+                linesBefore = len(grbl.raw)
+                threading.Thread(target=answerLater, daemon=True).start()
+                began = time.monotonic()
+                with redirect_stdout(io.StringIO()):
+                    answer = calibrate.readAnswer(prompt, readFile)   # the real, blocking reader
+                waited['seconds'] = time.monotonic() - began
+                waited['sentMeanwhile'] = len(grbl.raw) - linesBefore
+                return answer
+            return operator(prompt)
+        surfacing = self.runWith(ask, grbl)
+        self.assertGreaterEqual(waited['seconds'], 0.9)
+        self.assertEqual(waited['sentMeanwhile'], 0)        # nothing polled, nothing moved
+        self.assertEqual(surfacing.totalDepth, 0.6)          # the "y" ran pass 2
+        self.assertEqual(operator.script, [])
+
+    def testEndOfInputStops(self):
+        grbl = FakeGrbl()
+        readFile, writer = self.pipe()
+        os.close(writer)                                     # EOF at once
+        operator = Operator(START + PARAMETERS + FIRST_PASS + PARK + END)
+
+        def ask(prompt, inputStream=None):
+            if prompt.startswith("Another pass"):
+                with redirect_stdout(io.StringIO()):
+                    return calibrate.readAnswer(prompt, readFile)
+            return operator(prompt)
+        surfacing = self.runWith(ask, grbl)
+        self.assertIn("  (input closed: stopping)", self.output)
+        self.assertEqual(surfacing.passesDone, 1)
+        self.assertEqual(operator.script, [])
+        self.assertEqual(grbl.position, {'X': -600.0, 'Y': -580.0, 'Z': -3.0})   # parked
+
+    def testM5BeforeTheZLimitWriteThenSpinUpAgain(self):
+        settings = dict(SETTINGS)
+        settings['$132'] = '80.500'
+        grbl, surfacing, operator = self.run_flow(START + PARAMETERS + FIRST_PASS + [
+            ("Another pass at -0.3 mm (total -0.6)", "y"), ("Reset $132", "y"),
+            ("Another pass", "s")] + PARK + END, grbl=FakeGrbl(settings))
+        events = grbl.events
+        write = events.index("$132=109.000")
+        self.assertEqual([e for e in events[:write] if e in ("M3 S10000", "M5")][-1], "M5",
+                         "the spindle must be stopped before the $132 write")
+        after = events[write:]
+        m3 = after.index("M3 S10000")
+        self.assertEqual(after[m3 + 1], "G4 P3")      # restarted with the dwell
+        self.assertLess(m3, after.index("G53 G1 Z-80.600 F50"))
+
+    def testCtrlCInTheSecondPassStillStops(self):
+        grbl = FakeGrbl()
+        grbl.interruptAt = "G53 G1 Z-80.600"
+        self.run_flow(START + PARAMETERS + FIRST_PASS
+                      + [("Another pass at -0.3 mm (total -0.6)", "y")], grbl=grbl,
+                      expectException=KeyboardInterrupt)
+        self.assertIn(b'!', grbl.raw)
+        self.assertEqual(grbl.resets, 1)
+
+
+class SurfacedZLimitTests(FlowTestBase):
+    TWO_PASSES = (START + PARAMETERS + FIRST_PASS
+                  + [("Another pass at -0.3 mm (total -0.6)", "y"), ("Another pass", "s")]
+                  + PARK + [("Save this 35 mm bit and these settings", "n")])
+
+    def sidecarPath(self):
+        return calibrate.zLimitPath(self.profilePath)
+
+    def savedProfile(self):
+        with open(self.profilePath) as jsonFile:
+            return json.load(jsonFile)
+
+    def testArithmeticAndRecordsOnConfirm(self):
+        # Touch-off -80, two 0.3 mm passes: the new top is -80.6.  1 mm into it:
+        # the fence at -81.6, so $132 = 81.6.
+        grbl, surfacing, operator = self.run_flow(self.TWO_PASSES + [
+            ("Set the spoilboard Z limit from the surfaced top? [Y/n]", ""),
+            ("Depth to cut into the spoilboard", "1"), ("y to write it", "y")])
+        self.assertEqual(surfacing.surfacedTop(), -80.6)
+        self.assertIn("Surface measurement: surfaced top at z=-80.600 (given)", self.text())
+        self.assertIn("Lowest spindle z = surface z - into-depth = -81.600", self.text())
+        self.assertIn("$132=81.600", grbl.sent)
+        self.assertEqual(grbl.settings['$132'], '81.600')
+        self.assertEqual(self.savedProfile()["expectedSettings"]["$132"], "81.600")
+        with open(self.sidecarPath()) as jsonFile:
+            record = json.load(jsonFile)["spoilboard"]
+        self.assertEqual(record["measuredBy"], "surfaced")
+        self.assertEqual(record["bit"], "35 mm (not saved)")
+        self.assertEqual((record["surfaceZ"], record["intoDepth"], record["zLimit"]),
+                         (-80.6, 1.0, 81.6))
+        self.assertEqual((record["touchOffZ"], record["surfacedDepth"]), (-80.0, 0.6))
+        self.assertIn("only valid for the bit fitted now", self.text())
+        # The spindle was off before the $132 write.
+        events = grbl.events
+        self.assertEqual([e for e in events[:events.index("$132=81.600")]
+                          if e in ("M3 S10000", "M5")][-1], "M5")
+
+    def testChangeYourMindThenWrite(self):
+        grbl, surfacing, operator = self.run_flow(self.TWO_PASSES + [
+            ("Set the spoilboard Z limit", "y"), ("Depth to cut into the spoilboard", "1"),
+            ("1-3 to change", "3"), ("Depth to cut into the spoilboard", "2"),
+            ("y to write it", "y")])
+        self.assertIn("$132=82.600", grbl.sent)
+        self.assertNotIn("$132=81.600", grbl.sent)
+
+    def testNothingWrittenWithoutConfirm(self):
+        before = self.savedProfile()
+        grbl, surfacing, operator = self.run_flow(self.TWO_PASSES + [
+            ("Set the spoilboard Z limit", ""), ("Depth to cut into the spoilboard", "1"),
+            ("y to write it", "q")])
+        self.assertEqual([gcode for gcode in grbl.sent if gcode.startswith("$132=")], [])
+        self.assertEqual(self.savedProfile(), before)
+        self.assertFalse(os.path.exists(self.sidecarPath()))
+
+    def testDeclined(self):
+        before = self.savedProfile()
+        grbl, surfacing, operator = self.run_flow(self.TWO_PASSES + [
+            ("Set the spoilboard Z limit", "n")])
+        self.assertEqual(self.savedProfile(), before)
+        self.assertFalse(os.path.exists(self.sidecarPath()))
 
 
 class SafetyTests(FlowTestBase):
@@ -719,7 +947,8 @@ class SaveSettingsTests(FlowTestBase):
                   ("Depth per pass in mm [0.3, default]", ""),
                   ("Plunge feed in mm/min [50", ""), ("Spindle speed", ""), ("Clearance", ""),
                   ("y to start", "y"), ("Pass 1", ""), ("Another pass", "s")] + PARK + [
-                  ("Save these settings for 35mm-flat? [y/N]", "y"), ("Set it again now", "n")]
+                  ("Save these settings for 35mm-flat? [y/N]", "y"),
+                  ("Set the spoilboard Z limit", "n")]
         grbl, surfacing, operator = self.run_flow(script, arguments=("--bit", "35mm-flat",
                                                                      "--feed", "320"))
         self.assertIn("  6. Feed: 320 mm/min (from --feed)", self.output)
@@ -752,7 +981,7 @@ class SaveSettingsTests(FlowTestBase):
     def testUnsavedBitOfferedAsNewAfterRun(self):
         script = START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + [
             ("Save this 35 mm bit and these settings as a new bit", "y"),
-            ("Name for the new bit", "35mm-flat"), ("flutes", "2"), ("Set it again now", "n")]
+            ("Name for the new bit", "35mm-flat"), ("flutes", "2"), ("Set the spoilboard Z limit", "n")]
         self.run_flow(script)
         self.assertEqual(ssb.loadBits(self.bitsPath)["35mm-flat"],
                          {"diameter": 35.0, "flutes": 2, "feed": 286, "depthPerPass": 0.3,

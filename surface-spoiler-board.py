@@ -245,8 +245,6 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     approachZ = round(min(clearZ, touchZ - (totalDepth - passDepth) + APPROACH_HEIGHT), 3)
 
     rates = rapidRates or {'X': DEFAULT_RAPID, 'Y': DEFAULT_RAPID, 'Z': DEFAULT_RAPID}
-    feedWord = f"F{feed:g}"
-    plungeWord = f"F{plungeFeed:g}"
     gcode = ["G90 G21 G94"]
     plan = RasterPlan(gcode, lineYs, round(xStart, 3), round(xEnd, 3), actualStepover,
                       cutZ, clearZ, approachZ, notes=notes)
@@ -290,7 +288,7 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
                 plunge()
             move('G1', feed, X=xEnd)
     move('G0', Z=clearZ)
-    gcode.append("M5")
+    gcode.append("M5")                         # off while the operator answers
 
     for line in gcode:
         if len(line) > MAX_LINE_LENGTH:
@@ -654,7 +652,8 @@ class Surfacing:
         self.sources = {}
         self.totalDepth = 0.0
         self.passesDone = 0
-        self.lastPlan = None
+        self.lastDepth = None
+        self.spindleOn = False   # True from a pass's M3 until its M5
 
     # --- parameters ---------------------------------------------------------
 
@@ -795,7 +794,8 @@ class Surfacing:
 
     def touchOff(self):
         position = self.jogTo("Jog the bit DOWN until it just touches the plywood top: Shift+Down, "
-                              "hold Ctrl to creep (a sheet of paper under the bit helps).  If it "
+                              "hold Ctrl to creep, tap Shift+Down to step 0.1 mm, Alt+Shift+Down "
+                              "0.01 mm (a sheet of paper under the bit helps).  If it "
                               "stops with 'At the travel limit', $132 is in the way: Esc, then "
                               "calibrate.py --reset-z-limit.")
         self.grbl.send("G10 L20 P1 Z0")
@@ -805,15 +805,21 @@ class Surfacing:
     # --- planning -----------------------------------------------------------
 
     def plan(self, passDepth):
+        """One pass of passDepth below the current total.
+
+        Every pass is self-contained: it starts the spindle (M3 + spin-up dwell)
+        and ends lifted to clearance with M5, so the spindle is off while the
+        operator answers "Another pass?".
+        """
         settings = self.grbl.getSettings()
-        bounds = jogModule.softLimitBounds(settings)
         diameter = self.diameter()
         overrun = self.options.overrun if self.options.overrun is not None else diameter / 2
         totalAfter = round(self.totalDepth + passDepth, 3)
         return planRaster(self.choices['board'], diameter, self.choices['stepover'], overrun,
                           self.choices['touch'], totalAfter, passDepth, self.choices['clearance'],
-                          self.choices['pattern'], bounds, self.choices['feed'],
-                          self.choices['plunge'], self.choices['spindle'], rapidRates(settings))
+                          self.choices['pattern'], jogModule.softLimitBounds(settings),
+                          self.choices['feed'], self.choices['plunge'], self.choices['spindle'],
+                          rapidRates(settings))
 
     def summary(self):
         """The change-your-mind loop.  Returns once the operator answers y."""
@@ -835,8 +841,8 @@ class Surfacing:
                 self.out(f"  REFUSED: {refusal}")
             else:
                 self.describePlan(plan)
-                ok, bottom, floor = checkZRoom(self.choices['touch'], self.totalDepth
-                                               + self.choices['depth'],
+                ok, bottom, floor = checkZRoom(self.choices['touch'],
+                                               self.totalDepth + self.choices['depth'],
                                                self.grbl.getSettings()['$132'])
                 self.out("  Z room: " + (f"ok (cut bottom z={bottom:.3f}, $132 floor z={floor:.3f})"
                                          if ok else f"NOT enough: cut bottom z={bottom:.3f} is below "
@@ -867,29 +873,40 @@ class Surfacing:
     # --- checks before a pass -----------------------------------------------
 
     def ensureZRoom(self, totalAfter):
+        """The room check for one pass's bottom; offers the reset to workAreaZ."""
         settings = self.grbl.getSettings()
         ok, bottom, floor = checkZRoom(self.choices['touch'], totalAfter, settings['$132'])
         if ok:
             return True
+        full = float(self.profile.workAreaZ)
         self.out(f"  Not enough Z room: this pass cuts down to z={bottom:.3f}, but $132="
                  f"{settings['$132']} fences the spindle at z={floor:.3f} (with a {ROOM_MARGIN:g} mm "
                  "margin).  A cut below the fence is an ALARM:2, which stops everything and needs "
                  "re-homing.  The fence was probably set by calibrate.py --z-limit, a little into "
                  "the old spoilboard top; surfacing goes below that top.")
-        if not calibrate.askYesNo(self.ask, "Reset $132 to the profile's calibrated value now "
-                                            "(what calibrate.py --reset-z-limit does)?"):
+        if not calibrate.askYesNo(self.ask, f"Reset $132 to the full Z travel, {full:.3f} (the "
+                                            "profile's workAreaZ)?  Surfacing moves the spoilboard "
+                                            "top down, so the old spoilboard limit is out of date "
+                                            "anyway.  Only Grbl's $132 changes now, not the "
+                                            "profile's calibrated $132; at the end you can set a "
+                                            "new spoilboard limit from the surfaced top."):
             return False
-        calibrate.resetZLimit(self.grbl, self.profile, self.out)
+        self.stopSpindle()   # a $ setting is an EEPROM write: only with the spindle stopped
+        calibrate.writeZLimit(self.grbl, full, self.out)   # writes, then reads back
         settings = self.grbl.getSettings()
         ok, bottom, floor = checkZRoom(self.choices['touch'], totalAfter, settings['$132'])
         if not ok:
-            self.out(f"  Still not enough: the profile's calibrated $132={settings['$132']} fences "
-                     f"z={floor:.3f}.  It was probably itself set by a spoilboard Z limit; fix "
-                     "the profile's $132 before cutting deeper.")
+            self.out(f"  Still not enough: even the full travel ($132={settings['$132']}) fences "
+                     f"z={floor:.3f}, above z={bottom:.3f}.  Check the touch-off.")
         return ok
 
     def askPassDepth(self, passDepth, allowSame):
-        # The between-pass question.  Returns a depth, or None to stop.
+        """The after-pass question.  Returns a depth, or None to stop.
+
+        It waits for as long as it takes: readAnswer() blocks on the terminal
+        with no timeout, nothing polls Grbl meanwhile, and an empty line is the
+        operator's Enter (Y), never silence.  End of input (EOF) means stop.
+        """
         while True:
             if allowSame:
                 after = round(self.totalDepth + passDepth, 3)
@@ -897,58 +914,111 @@ class Surfacing:
                           "[Y / change depth / stop]: ")
             else:
                 prompt = "Change the depth, or stop? [c / s]: "
-            answer = self.ask(prompt).strip().lower()
+            try:
+                answer = self.ask(prompt).strip().lower()
+                if answer.startswith('c'):
+                    return askPositive(self.ask, "Depth for the next pass in mm: ")
+            except EOFError:
+                self.out("  (input closed: stopping)")
+                return None
             if allowSame and answer in ('', 'y', 'yes'):
                 return passDepth
-            if answer.startswith('c'):
-                return askPositive(self.ask, "Depth for the next pass in mm: ")
             if answer.startswith('s') or answer in ('n', 'no', 'q'):
                 return None
 
     # --- cutting ------------------------------------------------------------
 
+    def stopSpindle(self):
+        # M5, and wait for it.  The next pass then starts the spindle again,
+        # with the spin-up dwell.
+        if not self.spindleOn:
+            return
+        self.out("  Stopping the spindle first.")
+        streamGcode(self.grbl, ["M5"], 60, self.out, self.clock)
+        waitForIdle(self.grbl, 60, self.sleep, self.clock)
+        self.spindleOn = False
+
     def runPass(self, plan):
         timeout = plan.seconds * 2 + 120
         self.out(f"  Cutting: {len(plan.gcode)} lines, about {formatDuration(plan.seconds)}.  "
                  "Ctrl-C stops it.")
+        self.spindleOn = True   # from the M3; the pass's own M5 turns it off
         streamGcode(self.grbl, plan.gcode, timeout, self.out, self.clock)
-        waitForIdle(self.grbl, timeout, self.sleep, self.clock)
+        waitForIdle(self.grbl, timeout, self.sleep, self.clock)   # Idle: the M5 has run
+        self.spindleOn = False
 
-    def cutPasses(self):
-        passDepth = self.choices['depth']
-        allowSame = True
+    def askExtraPass(self, depth):
+        """After a pass, with the spindle stopped.  Returns the next pass's depth,
+        or None to stop.  A depth past the cap is refused here."""
+        cap = self.options.max_total_depth
         while True:
             try:
-                totalAfter = planPassDepth(self.totalDepth, passDepth, self.options.max_total_depth)
+                planPassDepth(self.totalDepth, depth, cap)
+                fits = True
+            except DepthRefused as refusal:
+                fits = False
+                self.out(f"  {refusal}")
+                if cap - self.totalDepth < 0.001:
+                    self.out("  The total-depth cap is reached.")
+                    return None
+            self.out("  (spindle off; answering Y restarts it)")
+            answer = self.askPassDepth(depth, allowSame=fits)
+            if answer is None:
+                return None
+            if fits and answer == depth:
+                return depth
+            try:
+                planPassDepth(self.totalDepth, answer, cap)
+                return answer
             except DepthRefused as refusal:
                 self.out(f"  {refusal}")
-                if self.options.max_total_depth - self.totalDepth < 0.001:
-                    self.out("  The total-depth cap is reached.")
-                    return
-                passDepth = self.askPassDepth(passDepth, allowSame=False)
-                if passDepth is None:
-                    return
-                continue
+                depth = answer
+
+    def cutPasses(self):
+        """One pass at a time, a question after each.
+
+        Before every pass: the cap and the room check for that pass's bottom.
+        The first pass needs an Enter; after that, the answer to "Another
+        pass?" is the go-ahead: the next pass restarts the spindle with the
+        spin-up dwell and cuts.  Raises Quit if the operator quits at the summary.
+        """
+        depth = self.choices['depth']
+        while True:
+            totalAfter = round(self.totalDepth + depth, 3)
             if not self.ensureZRoom(totalAfter):
-                passDepth = self.askPassDepth(passDepth, allowSame=False)
-                if passDepth is None:
-                    return
+                if not self.passesDone:
+                    self.out("  Back to the summary: change the depth, or q to quit.")
+                    self.summary()
+                    depth = self.choices['depth']
+                else:
+                    while True:   # declined the reset: a shallower pass, or stop
+                        depth = self.askPassDepth(depth, allowSame=False)
+                        if depth is None:
+                            return
+                        try:
+                            planPassDepth(self.totalDepth, depth, self.options.max_total_depth)
+                            break
+                        except DepthRefused as refusal:
+                            self.out(f"  {refusal}")
                 continue
-            plan = self.plan(passDepth)
+            plan = self.plan(depth)
             number = self.passesDone + 1
             if number == 1:
                 self.out(SAFETY_REMINDER)
-            self.ask(f"Pass {number}: -{passDepth:g} mm (total -{totalAfter:g}), "
-                     f"{len(plan.lineYs)} lines, about {formatDuration(plan.seconds)}.  The bit "
-                     "lifts, the spindle starts, then it cuts.  Press Enter to start. ")
+                self.ask(f"Pass 1: -{depth:g} mm (total -{totalAfter:g}), {len(plan.lineYs)} lines, "
+                         f"about {formatDuration(plan.seconds)}.  The bit lifts, the spindle starts, "
+                         "then it cuts.  Press Enter to start. ")
+            else:
+                self.out(f"  Pass {number}: -{depth:g} mm (total -{totalAfter:g}), about "
+                         f"{formatDuration(plan.seconds)}.")
             self.runPass(plan)
             self.totalDepth = totalAfter
             self.passesDone += 1
-            self.lastPlan = plan
-            self.choices['depth'] = passDepth
-            self.out(f"  Pass {number} done: {self.totalDepth:.3f} mm removed in total.")
-            passDepth = self.askPassDepth(passDepth, allowSame=True)
-            if passDepth is None:
+            self.lastDepth = depth
+            self.out(f"  Pass {number} done: {self.totalDepth:.3f} mm removed in total.  The bit is "
+                     "up at clearance and the spindle is stopped.")
+            depth = self.askExtraPass(depth)
+            if depth is None:
                 return
 
     def park(self):
@@ -962,6 +1032,7 @@ class Surfacing:
         lines = ["M5", f"G53 G0 Z{clearZ:.3f}", f"G53 G0 Z{top:.3f}",
                  f"G53 G0 X{x0:.3f} Y{y0:.3f}"]
         streamGcode(self.grbl, lines, 300, self.out, self.clock)
+        self.spindleOn = False
         waitForIdle(self.grbl, 300, self.sleep, self.clock)
 
     def finish(self):
@@ -972,16 +1043,32 @@ class Surfacing:
             return
         bitName, entry = self.choices['bit']
         diameter = self.diameter()
-        used = {'feed': self.choices['feed'], 'depthPerPass': self.choices['depth'],
+        used = {'feed': self.choices['feed'], 'depthPerPass': self.lastDepth,
                 'stepoverPercent': round(self.choices['stepover'] / diameter * 100, 1),
                 'plunge': self.choices['plunge']}
         offerSaveBitSettings(self.ask, self.out, self.bits, self.bitsPath, bitName, diameter, used)
-        self.out("The spoilboard top has moved, so a spoilboard Z limit set before is now wrong.")
-        if calibrate.askYesNo(self.ask, "Set it again now (calibrate.py --z-limit --method "
-                                        "spoilboard; needs the probe plate)?"):
-            calibrate.runZLimitStep(self.grbl, self.profile, self.profilePath,
-                                    method=calibrate.METHOD_SPOILBOARD, ask=self.ask, out=self.out,
-                                    runJog=self.runJog, checkEnvironment=self.checkEnvironment)
+        self.offerSurfacedZLimit(bitName, diameter)
+
+    def surfacedTop(self):
+        # The spindle z at which this bit's tip meets the new top: the touch-off
+        # met the old top, and the passes took totalDepth off it.
+        return round(self.choices['touch'] - self.totalDepth, 3)
+
+    def offerSurfacedZLimit(self, bitName, diameter):
+        self.stopSpindle()   # park() has already sent M5; this makes sure
+        top = self.surfacedTop()
+        self.out(f"The spoilboard top has moved down {self.totalDepth:.3f} mm, to z={top:.3f} for this "
+                 "bit, so a spoilboard Z limit set before is out of date.")
+        answer = self.ask("Set the spoilboard Z limit from the surfaced top? [Y/n] ").strip().lower()
+        if answer in ('n', 'no'):
+            return None
+        return calibrate.runZLimitStep(
+            self.grbl, self.profile, self.profilePath, method=calibrate.METHOD_SPOILBOARD,
+            ask=self.ask, out=self.out, runJog=self.runJog,
+            checkEnvironment=self.checkEnvironment, surface=top, measuredBy="surfaced",
+            recordExtra={"bit": bitName or f"{diameter:g} mm (not saved)",
+                         "touchOffZ": round(self.choices['touch'], 3),
+                         "surfacedDepth": self.totalDepth})
 
     # --- the whole run ------------------------------------------------------
 
@@ -1009,12 +1096,12 @@ class Surfacing:
                          "from calibrate.py --z-limit is in force.  The room under it is checked "
                          "before each pass.")
             self.summary()
+            self.cutPasses()
         except Quit:
             self.out("  Nothing cut.")
             if 'touch' in self.choices:   # the bit is resting on the plywood: lift and park
                 self.finish()
             return self.totalDepth
-        self.cutPasses()
         self.finish()
         return self.totalDepth
 
