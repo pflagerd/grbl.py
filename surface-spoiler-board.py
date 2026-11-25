@@ -986,7 +986,10 @@ class Surfacing:
         while True:
             if allowSame:
                 after = round(self.totalDepth + passDepth, 3)
-                prompt = (f"Another pass at -{passDepth:g} mm (total -{after:g})? "
+                # Manual mode: the Y also confirms the router is on, because Y
+                # plunges at once and Grbl can't start a hand-switched router.
+                prompt = (("Router ON? " if self.manual else "")
+                          + f"Another pass at -{passDepth:g} mm (total -{after:g})? "
                           "[Y / change depth / stop]: ")
             else:
                 prompt = "Change the depth, or stop? [c / s]: "
@@ -1033,9 +1036,14 @@ class Surfacing:
         waitForIdle(self.grbl, timeout, self.sleep, self.clock)   # Idle: the M5 has run
         self.spindleOn = False
 
-    def askExtraPass(self, depth):
-        """After a pass, with the spindle stopped.  Returns the next pass's depth,
-        or None to stop.  A depth past the cap is refused here."""
+    def askExtraPass(self, depth, mustChange=False):
+        """After a pass.  Returns the next pass's depth, or None to stop.
+
+        A depth past the cap is refused here.  mustChange: `depth` can't be cut
+        (no room), so only "change the depth, or stop" is offered.  In manual
+        mode a changed depth comes back to the "Router ON? Another pass ...?"
+        question with the new numbers, so nothing cuts without that Y.
+        """
         cap = self.options.max_total_depth
         while True:
             try:
@@ -1047,19 +1055,25 @@ class Surfacing:
                 if cap - self.totalDepth < 0.001:
                     self.out("  The total-depth cap is reached.")
                     return None
-            self.out("  (router still running -- switch it off if you'll be away)" if self.manual
-                     else "  (spindle off; answering Y restarts it)")
-            answer = self.askPassDepth(depth, allowSame=fits)
+            allowSame = fits and not mustChange
+            if allowSame:
+                self.out("  (answer Y only with the router running)" if self.manual
+                         else "  (spindle off; answering Y restarts it)")
+            answer = self.askPassDepth(depth, allowSame=allowSame)
             if answer is None:
                 return None
-            if fits and answer == depth:
+            if allowSame and answer == depth:
                 return depth
             try:
                 planPassDepth(self.totalDepth, answer, cap)
-                return answer
             except DepthRefused as refusal:
                 self.out(f"  {refusal}")
                 depth = answer
+                continue
+            if self.manual:
+                depth, mustChange = answer, False   # confirm it with "Router ON? ..."
+                continue
+            return answer
 
     def cutPasses(self):
         """One pass at a time, a question after each.
@@ -1077,16 +1091,10 @@ class Surfacing:
                     self.out("  Back to the summary: change the depth, or q to quit.")
                     self.summary()
                     depth = self.choices['depth']
-                else:
-                    while True:   # declined the reset: a shallower pass, or stop
-                        depth = self.askPassDepth(depth, allowSame=False)
-                        if depth is None:
-                            return
-                        try:
-                            planPassDepth(self.totalDepth, depth, self.options.max_total_depth)
-                            break
-                        except DepthRefused as refusal:
-                            self.out(f"  {refusal}")
+                else:   # declined the reset: a shallower pass, or stop
+                    depth = self.askExtraPass(depth, mustChange=True)
+                    if depth is None:
+                        return
                 continue
             plan = self.plan(depth)
             number = self.passesDone + 1

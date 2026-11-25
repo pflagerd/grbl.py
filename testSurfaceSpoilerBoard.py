@@ -986,8 +986,8 @@ class ManualSpindleFlowTests(FlowTestBase):
     def testRouterOnBeforeTheFirstPlungeAndNoDwell(self):
         grbl, surfacing, seen = self.recordedRun(
             START + self.PARAMETERS + FIRST_PASS + [("Switch the router ON now, then press Enter", ""),
-                                                    ("Another pass at -0.3 mm (total -0.6)", "y"),
-                                                    ("Another pass", "s"),
+                                                    ("Router ON? Another pass at -0.3 mm (total -0.6)", "y"),
+                                                    ("Router ON? Another pass", "s"),
                                                     ("Switch the router OFF now", "")] + END)
         lines = grbl.lines
         self.assertNotIn("G4 P3", lines)
@@ -999,12 +999,47 @@ class ManualSpindleFlowTests(FlowTestBase):
         self.assertEqual(sentBefore[-2:], ["G53 G0 Z-75.000", "M3 S10000"])   # lifted first
         self.assertFalse(any(line.startswith("G53 G1") for line in sentBefore))
         self.assertIn("G53 G1 Z-80.300 F50", lines)
-        self.assertIn("  (router still running -- switch it off if you'll be away)", self.output)
+        self.assertIn("  (answer Y only with the router running)", self.output)
+        asked = [prompt for prompt, sent in seen if "Another pass" in prompt]
+        self.assertEqual(asked, ["Router ON? Another pass at -0.3 mm (total -0.6)? "
+                                 "[Y / change depth / stop]: ",
+                                 "Router ON? Another pass at -0.3 mm (total -0.9)? "
+                                 "[Y / change depth / stop]: "])
         self.assertNotIn("  (spindle off; answering Y restarts it)", self.output)
         self.assertIn("router keeps", self.text())
         summary = next(line for line in self.output if line.startswith("  8. Spindle:"))
         self.assertIn("control: manual (saved in 6060.machine.json)", summary)
         self.assertEqual(surfacing.totalDepth, 0.6)
+
+    def testChangedDepthIsConfirmedWithRouterOn(self):
+        # "change depth" must not cut straight away in manual mode: the new
+        # numbers come back as a "Router ON?" question first.
+        grbl, surfacing, seen = self.recordedRun(
+            START + self.PARAMETERS + FIRST_PASS + [
+                ("Switch the router ON now", ""),
+                ("Router ON? Another pass at -0.3 mm (total -0.6)", "c"),
+                ("Depth for the next pass", "0.2"),
+                ("Router ON? Another pass at -0.2 mm (total -0.5)", "y"),
+                ("Router ON? Another pass at -0.2 mm (total -0.7)", "s"),
+                ("Switch the router OFF now", "")] + END)
+        confirm = next(sent for prompt, sent in seen
+                       if prompt.startswith("Router ON? Another pass at -0.2 mm (total -0.5)"))
+        self.assertNotIn("G53 G1 Z-80.500 F50", confirm)      # nothing cut before the Y
+        self.assertIn("G53 G1 Z-80.500 F50", grbl.lines)
+        self.assertEqual(surfacing.totalDepth, 0.5)
+
+    def testShallowerPassAfterADeclinedResetIsConfirmedToo(self):
+        settings = dict(SETTINGS)
+        settings['$132'] = '80.500'
+        grbl, surfacing, seen = self.recordedRun(
+            START + self.PARAMETERS + FIRST_PASS + [
+                ("Switch the router ON now", ""),
+                ("Router ON? Another pass at -0.3 mm (total -0.6)", "y"), ("Reset $132", "n"),
+                ("Change the depth, or stop", "c"), ("Depth for the next pass", "0.1"),
+                ("Router ON? Another pass at -0.1 mm (total -0.4)", "y"),
+                ("Router ON? Another pass", "s"), ("Switch the router OFF now", "")] + END,
+            grbl=FakeGrbl(settings))
+        self.assertEqual(surfacing.totalDepth, 0.4)
 
     def testCtrlCSaysTheRouterIsStillRunning(self):
         grbl = FakeGrbl()
@@ -1034,6 +1069,19 @@ class GrblSpindleUnchangedTests(FlowTestBase):
         self.assertFalse(any("router" in prompt.lower() for prompt in operator.prompts))
         summary = next(line for line in self.output if line.startswith("  8. Spindle:"))
         self.assertIn("control: grbl (saved in 6060.machine.json)", summary)
+
+    def testGrblPromptHasNoRouterWordingAndAChangedDepthCutsAtOnce(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "c"),
+                                               ("Depth for the next pass", "0.2"),
+                                               ("Another pass at -0.2 mm (total -0.7)", "s")]
+            + PARK + END)
+        another = [prompt for prompt in operator.prompts if "Another pass" in prompt]
+        self.assertEqual(another[0], "Another pass at -0.3 mm (total -0.6)? "
+                                     "[Y / change depth / stop]: ")
+        self.assertFalse(any("Router ON?" in prompt for prompt in operator.prompts))
+        self.assertIn("  (spindle off; answering Y restarts it)", self.output)
+        self.assertEqual(surfacing.totalDepth, 0.5)
 
     def testCommandLineOverridesTheSavedMode(self):
         ssb.writeJsonAtomically(self.machinePath, {"schemaVersion": 1, "spindleControl": "manual"})
