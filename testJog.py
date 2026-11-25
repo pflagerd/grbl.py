@@ -1007,5 +1007,133 @@ class EnvironmentCheckTests(unittest.TestCase):
         self.assertEqual(set(facts), set(self.GOOD))
 
 
+
+class PositionBlockTests(unittest.TestCase):
+    BOUNDS = jog.softLimitBounds(SETTINGS)
+
+    def testColumnsAndAtLimit(self):
+        lines = jog.formatPositionBlock({'X': -417.0, 'Y': -150.5, 'Z': -3.0}, self.BOUNDS,
+                                        'Jog', 'At the travel limit in that direction.')
+        self.assertEqual(len(lines), 6)   # header, X, Y, Z, state, message
+        self.assertIn("Position", lines[0])
+        self.assertIn("To high", lines[0])
+        x, y, z = lines[1:4]
+        self.assertTrue(x.startswith("  X  ") and "-417.000" in x)
+        self.assertEqual(x.split()[-2], "limit")        # X is at its low (home) end
+        self.assertIn("150.500", y)                    # room to the high end
+        self.assertTrue(z.rstrip().endswith("at limit"))  # Z is at its high (home) end
+        self.assertEqual(lines[4], "  State: Jog")
+        self.assertEqual(lines[5], "  At the travel limit in that direction.")
+
+    def testBeforeTheFirstReport(self):
+        lines = jog.formatPositionBlock(None, self.BOUNDS)
+        self.assertEqual(lines[1].split()[:2], ["X", "-"])
+        self.assertEqual(lines[4], "  State: -")
+
+    def testNoMinusZero(self):
+        self.assertEqual(jog.formatMm(-0.0001), "0.000")
+        self.assertEqual(jog.formatMm(-1.25), "-1.250")
+
+    def testFitsAnEightyColumnTerminal(self):
+        lines = jog.formatPositionBlock({'X': -417.0, 'Y': -150.5, 'Z': -3.0}, self.BOUNDS,
+                                        'Jog', "x" * 200)
+        self.assertTrue(all(len(line) <= 78 for line in lines))
+        wide = jog.formatPositionBlock(None, self.BOUNDS, message="x" * 200, width=150)
+        self.assertEqual(len(wide[-1]), 149)   # the message uses the width given
+
+
+class PositionDisplayTests(unittest.TestCase):
+    def display(self):
+        written = []
+        display = jog.PositionDisplay(jog.softLimitBounds(SETTINGS), write=written.append,
+                                      flush=lambda: None)
+        return display, written
+
+    def testDrawsOnceThenRedrawsInPlace(self):
+        display, written = self.display()
+        display.start()
+        self.assertEqual(written[0], jog.PositionDisplay.HIDE_CURSOR)
+        first = "".join(written[1:])
+        self.assertEqual(first.count("\n"), 6)
+        self.assertNotIn("\x1b[6A", first)              # nothing to go back over yet
+        written.clear()
+        display.update({'X': -400.0, 'Y': -300.0, 'Z': -10.0}, 'Jog')
+        again = "".join(written)
+        self.assertTrue(again.startswith("\x1b[6A"))    # back up over the block
+        self.assertEqual(again.count("\r\x1b[2K"), 6)   # and rewrite each line
+        self.assertIn("-400.000", again)
+        written.clear()
+        display.update({'X': -400.0, 'Y': -300.0, 'Z': -10.0}, 'Jog')
+        self.assertEqual(written, [])                  # unchanged: nothing redrawn
+
+    def testMessagesGoOnTheLastLine(self):
+        display, written = self.display()
+        display.start()
+        written.clear()
+        display.message("At the travel limit in that direction; not moving.")
+        lines = "".join(written).split("\n")
+        self.assertIn("At the travel limit", lines[5])
+
+    def testCloseShowsTheCursor(self):
+        display, written = self.display()
+        display.start()
+        display.close()
+        self.assertEqual(written[-1], jog.PositionDisplay.SHOW_CURSOR)
+
+    def testOnlyOnARealTerminal(self):
+        class Stream:
+            def __init__(self, tty):
+                self.tty = tty
+
+            def isatty(self):
+                return self.tty
+        with mock.patch.dict(os.environ, {"TERM": "xterm"}):
+            self.assertTrue(jog.terminalShowsDisplay(Stream(True)))
+            self.assertFalse(jog.terminalShowsDisplay(Stream(False)))
+        with mock.patch.dict(os.environ, {"TERM": "dumb"}):
+            self.assertFalse(jog.terminalShowsDisplay(Stream(True)))
+
+
+class PositionDisplayInTheJogLoopTests(unittest.TestCase):
+    def run_(self, script, grbl, showPosition):
+        keyboard = FakeDevice(ARROWS + ['KEY_LEFTSHIFT'])
+        timeline = Timeline(keyboard, script)
+        grbl.clock = timeline.monotonic
+        messages = []
+        screen = io.StringIO()
+        fakeTime = types.SimpleNamespace(monotonic=timeline.monotonic, sleep=timeline.sleep)
+        with mock.patch.object(jog, 'importEvdev', return_value=fakeEvdev({'/dev/input/event0': keyboard})), \
+                mock.patch.object(jog, 'select', types.SimpleNamespace(select=timeline.select)), \
+                mock.patch.object(jog, 'time', fakeTime), mock.patch.object(sys, 'stdout', screen):
+            result = jog.runKeyboardJog(grbl, True, out=messages.append, showPosition=showPosition)
+        return result, screen.getvalue(), messages, timeline
+
+    def testTheBlockFollowsTheJog(self):
+        grbl = FakeGrbl(position=MIDDLE, autoFinishPolls=2)
+        result, screen, messages, timeline = self.run_(
+            [(0.0, 'KEY_RIGHT', 1), (0.05, 'KEY_RIGHT', 0), (1.0, 'KEY_ENTER', 1)], grbl, True)
+        self.assertEqual(result, jog.ACCEPTED)
+        self.assertTrue(screen.startswith(jog.PositionDisplay.HIDE_CURSOR))
+        self.assertIn("-200.000", screen)              # where it started
+        self.assertIn("-199.900", screen)              # after the 0.1 mm tap
+        self.assertIn("\x1b[6A", screen)               # redrawn in place
+        self.assertTrue(screen.endswith(jog.PositionDisplay.SHOW_CURSOR))
+        self.assertTrue(all(timeout <= jog.DISPLAY_INTERVAL + 1e-9
+                            for _, timeout in timeline.timeouts))
+
+    def testMessagesGoInTheBlockNotOut(self):
+        grbl = FakeGrbl()   # at home: Left is toward the home switch
+        result, screen, messages, _ = self.run_(
+            [(0.0, 'KEY_LEFT', 1), (0.05, 'KEY_LEFT', 0), (0.5, 'KEY_ENTER', 1)], grbl, True)
+        self.assertIn("At the travel limit in that direction; not moving.", screen)
+        self.assertNotIn("At the travel limit in that direction; not moving.", messages)
+        self.assertIn("Jog mode: arrows", " ".join(messages))   # the two lines still go to out
+
+    def testOffNothingIsDrawn(self):
+        grbl = FakeGrbl(position=MIDDLE, autoFinishPolls=2)
+        result, screen, messages, _ = self.run_(
+            [(0.0, 'KEY_RIGHT', 1), (0.05, 'KEY_RIGHT', 0), (1.0, 'KEY_ENTER', 1)], grbl, False)
+        self.assertEqual(screen, "")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
