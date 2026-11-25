@@ -112,8 +112,8 @@ CHECKLIST = {
     "intro": evidence.consoleSteps("jog.py", REPO, qaRunner.shortPath(REPO)) + [
         {"do": "Please make sure the spindle is off and the bit is well clear of the "
                "spoilboard, and keep a hand near the E-stop button throughout.\n\n"
-               "Every jog.py run homes the machine first, because connecting resets this "
-               "controller. That's why each command here uses --home."},
+               "Because connecting resets this controller, every jog.py must home the "
+               "machine first. That is why you will see jog.py --home in upcoming steps."},
     ],
     "sections": [
         {

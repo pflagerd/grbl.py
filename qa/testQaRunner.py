@@ -1131,7 +1131,9 @@ class ChecklistSanityTests(unittest.TestCase):
         self.assertIn("source .venv/bin/activate", intro[0]["run"])
         safety, homes = intro[1]["do"].split("\n\n")
         self.assertIn("E-stop button", safety)
-        self.assertTrue(homes.startswith("Every jog.py run homes the machine first"))
+        self.assertEqual(homes, "Because connecting resets this controller, every jog.py must home "
+                                "the machine first. That is why you will see jog.py --home in "
+                                "upcoming steps.")
         self.assertIn("--home", homes)
         self.assertEqual(set(intro[1]), {"do"})
 
