@@ -15,7 +15,7 @@ that switch triggers.  The Z probe is therefore operator-terminated: you watch
 the tool tip and press Enter when it nears the obstruction.  What gets measured
 is the USABLE depth, which is what workAreaZ / $132 mean.
 
-Run with the machine powered, the work area clear, and a hand near the reset
+Run with the machine powered, the work area clear, and a hand near the E-stop
 button.  Nothing moves without an Enter from you first.
 
 Z limit (issue #13, step 9): sets Grbl's Z soft limit ($132) so the bit cannot
@@ -533,7 +533,7 @@ def probeSurface(grbl, settings, plateThickness, ask, out=print, pinTimeout=PROB
     out(f"  The probe goes down at most {room:.3f} mm (the current $132={settings['$132']} fences "
         f"z={limitZ:.3f}), at {PROBE_SEEK_FEED} mm/min.  If the surface is lower, run "
         "--reset-z-limit first.")
-    ask("About to probe DOWN.  Hand on reset.  Press Enter when ready. ")
+    ask("About to probe DOWN.  Hand on the E-stop button.  Press Enter when ready. ")
     try:
         seekZ = sendProbe(grbl, room, PROBE_SEEK_FEED)
     except ProbeFailed:
@@ -832,7 +832,7 @@ def zLimitMain(arguments):
         resetZLimit(grbl, profile)
         return
 
-    print("\nKeep a hand near reset/power at all times.")
+    print("\nKeep a hand near the E-stop button at all times.")
     if not confirm("Has the machine been homed ($H) since it was powered on?"):
         pause("About to home the machine.")
         alarm = grbl.tryHomingCycle(profile.homingPosition)
@@ -875,7 +875,7 @@ def main():
     snapshot = grbl.getSettings()
     print(f"Connected. Grbl {grbl.grblVersion or 'version unknown'}, {len(snapshot)} settings read.")
 
-    print("\nKeep a hand near reset/power at all times.")
+    print("\nKeep a hand near the E-stop button at all times.")
     pause("Clear the work area of clamps, stock, and tools.")
 
     # Limits off during the test: a probed switch touch must not hard-alarm, and

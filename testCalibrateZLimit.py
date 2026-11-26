@@ -584,5 +584,29 @@ class WriteAndResetTests(ZLimitTestBase):
         self.assertEqual(grbl.settingWrites(), ["$132=109.000"])
 
 
+class OperatorWordingTests(unittest.TestCase):
+    """The operator is told to use the E-stop button, never reset/power.
+
+    The Grbl soft reset (Ctrl-X) and --reset-z-limit are different things and
+    keep their names.
+    """
+
+    BANNED = ("reset button", "reset/power", "power switch", "hand on reset")
+
+    def testNoOperatorMessageSaysResetButton(self):
+        # Every string literal in calibrate.py, f-string pieces and the
+        # docstring included, with line breaks folded to single spaces so a
+        # phrase wrapped across two lines is still caught.
+        import ast
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "calibrate.py")) as source:
+            tree = ast.parse(source.read())
+        found = [(node.lineno, node.value) for node in ast.walk(tree)
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                 and any(banned in " ".join(node.value.lower().split())
+                         for banned in self.BANNED)]
+        self.assertEqual(found, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
