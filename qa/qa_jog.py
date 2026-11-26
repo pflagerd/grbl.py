@@ -43,10 +43,10 @@ def inGroupNow():
 def startingPoint():
     """S4: what keyboard-jog setup is already in place, and so which tests to skip."""
     evdev, group = evdevInVenv(), listed()
-    about = "The next tests check how jog.py helps you set up keyboard jog. "
     if not evdev and not group:
-        return qaRunner.PASS, about + ("evdev isn't installed in the venv yet and you aren't "
-                                       "in the 'input' group yet, so we'll test that setup.")
+        return qaRunner.PASS, ("evdev isn't installed in the venv yet and you aren't in the "
+                               "'input' group yet, so the next tests will check how jog.py "
+                               "helps you set up keyboard jog.")
     done = []
     if evdev:
         done.append("evdev is already installed in the venv")
@@ -55,9 +55,11 @@ def startingPoint():
                     ("" if inGroupNow() else " (from your next login)"))
     found = " and ".join(done)
     found = found[0].upper() + found[1:] if found.startswith("you") else found
-    part = "that setup" if evdev and group else "that part of the setup"
-    return qaRunner.SKIP, (about + found + f", so {part} is already done. "
-                           "That's why I'll skip the tests that check it.")
+    if evdev and group:
+        return qaRunner.SKIP, (found + ", so keyboard jog is already set up. That's why I'll "
+                               "skip the next tests, which check how jog.py helps you set it up.")
+    return qaRunner.SKIP, (found + ", so that part of keyboard jog's setup is already done. "
+                           "That's why I'll skip the next tests that check it.")
 
 
 def evdevInstalled():

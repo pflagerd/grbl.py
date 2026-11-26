@@ -840,26 +840,35 @@ class StartingPointTests(unittest.TestCase):
     def testAllSetUp(self):
         result, text = self.message(True, True)
         self.assertEqual(result, qaRunner.SKIP)
-        self.assertIn("evdev is already installed in the venv and you're already listed in "
-                      "the 'input' group, so that setup is already done. That's why I'll "
-                      "skip the tests that check it.", text)
+        self.assertEqual("evdev is already installed in the venv and you're already listed in "
+                         "the 'input' group, so keyboard jog is already set up. That's why I'll "
+                         "skip the next tests, which check how jog.py helps you set it up.", text)
 
     def testPartlySetUp(self):
-        self.assertIn("evdev is already installed in the venv, so that part of the setup is "
-                      "already done.", self.message(True, False)[1])
-        self.assertIn("You're already listed in the 'input' group (from your next login), so "
-                      "that part", self.message(False, True, now=False)[1])
+        self.assertEqual("evdev is already installed in the venv, so that part of keyboard "
+                         "jog's setup is already done. That's why I'll skip the next tests that "
+                         "check it.", self.message(True, False)[1])
+        self.assertEqual("You're already listed in the 'input' group (from your next login), "
+                         "so that part of keyboard jog's setup is already done. That's why I'll "
+                         "skip the next tests that check it.",
+                         self.message(False, True, now=False)[1])
+        self.assertTrue(self.message(False, True)[1].startswith(
+            "You're already listed in the 'input' group, so that part"))
+        for case in ((True, False), (False, True)):
+            self.assertEqual(self.message(*case)[0], qaRunner.SKIP)
 
     def testNothingSetUp(self):
         result, text = self.message(False, False)
         self.assertEqual(result, qaRunner.PASS)
-        self.assertIn("so we'll test that setup.", text)
+        self.assertEqual("evdev isn't installed in the venv yet and you aren't in the 'input' "
+                         "group yet, so the next tests will check how jog.py helps you set up "
+                         "keyboard jog.", text)
 
-    def testNoNegativeWording(self):
+    def testStartsWithWhatWasChecked(self):
         for case in ((True, True), (True, False), (False, True), (False, False)):
             text = self.message(*case)[1]
-            self.assertTrue(text.startswith("The next tests check how jog.py helps you set "
-                                            "up keyboard jog. "))
+            self.assertFalse(text.startswith("The next tests"), text)
+            self.assertTrue(text.startswith(("evdev", "You're")), text)
             self.assertNotIn("Not a clean starting point", text)
             self.assertNotIn("They need", text)
 
