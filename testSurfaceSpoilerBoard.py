@@ -24,7 +24,7 @@ import tempfile
 import time
 import types
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import calibrate
@@ -671,7 +671,7 @@ class FlowTests(FlowTestBase):
         # Cap 0.5: 0.3, then a 0.3 is refused; change to 0.2; then the cap is reached.
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + FIRST_PASS
-            + [("Change the depth, or stop", "c"), ("Depth for the next pass", "0.2")]
+            + [("Change the depth, or stop", "c"), ("How much deeper for the next pass", "0.2")]
             + PARK + END,
             arguments=("--diameter", "35", "--max-total-depth", "0.5"))
         self.assertEqual(surfacing.totalDepth, 0.5)
@@ -1049,7 +1049,7 @@ class ZRoomFlowTests(FlowTestBase):
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "y"),
                                                ("Reset $132", "n"), ("Change the depth, or stop", "c"),
-                                               ("Depth for the next pass", "0.1"),
+                                               ("How much deeper for the next pass", "0.1"),
                                                ("Another pass", "s")] + PARK + END,
             grbl=self.shallow('80.500'))
         self.assertEqual(surfacing.totalDepth, 0.4)
@@ -1356,7 +1356,7 @@ class ManualSpindleFlowTests(FlowTestBase):
             START + self.PARAMETERS + FIRST_PASS + [
                 ("Switch the router ON now", ""),
                 ("Router ON? Another pass at -0.3 mm (total -0.6)", "c"),
-                ("Depth for the next pass", "0.2"),
+                ("How much deeper for the next pass", "0.2"),
                 ("Router ON? Another pass at -0.2 mm (total -0.5)", "y"),
                 ("Router ON? Another pass at -0.2 mm (total -0.7)", "s"),
                 ("Switch the router OFF now", "")] + END)
@@ -1366,6 +1366,20 @@ class ManualSpindleFlowTests(FlowTestBase):
         self.assertIn("G53 G1 Z-80.500 F50", grbl.lines)
         self.assertEqual(surfacing.totalDepth, 0.5)
 
+    def testChangedDepthWithAMinusSign(self):
+        # The "Router ON? Another pass at -0.05 mm" question is the
+        # confirmation here, so there is no separate "Next pass:" line.
+        grbl, surfacing, seen = self.recordedRun(
+            START + self.PARAMETERS + FIRST_PASS + [
+                ("Switch the router ON now", ""),
+                ("Router ON? Another pass at -0.3 mm (total -0.6)", "c"),
+                ("How much deeper for the next pass", "-0.05"),
+                ("Router ON? Another pass at -0.05 mm (total -0.35)", "y"),
+                ("Router ON? Another pass at -0.05 mm (total -0.4)", "s"),
+                ("Switch the router OFF now", "")] + END)
+        self.assertEqual(surfacing.totalDepth, 0.35)
+        self.assertFalse(any("Next pass:" in line for line in self.output))
+
     def testShallowerPassAfterADeclinedResetIsConfirmedToo(self):
         settings = dict(SETTINGS)
         settings['$132'] = '80.500'
@@ -1373,7 +1387,7 @@ class ManualSpindleFlowTests(FlowTestBase):
             START + self.PARAMETERS + FIRST_PASS + [
                 ("Switch the router ON now", ""),
                 ("Router ON? Another pass at -0.3 mm (total -0.6)", "y"), ("Reset $132", "n"),
-                ("Change the depth, or stop", "c"), ("Depth for the next pass", "0.1"),
+                ("Change the depth, or stop", "c"), ("How much deeper for the next pass", "0.1"),
                 ("Router ON? Another pass at -0.1 mm (total -0.4)", "y"),
                 ("Router ON? Another pass", "s"), ("Switch the router OFF now", "")] + END,
             grbl=FakeGrbl(settings))
@@ -1411,7 +1425,7 @@ class GrblSpindleUnchangedTests(FlowTestBase):
     def testGrblPromptHasNoRouterWordingAndAChangedDepthCutsAtOnce(self):
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "c"),
-                                               ("Depth for the next pass", "0.2"),
+                                               ("How much deeper for the next pass", "0.2"),
                                                ("Another pass at -0.2 mm (total -0.7)", "s")]
             + PARK + END)
         another = [prompt for prompt in operator.prompts if "Another pass" in prompt]
@@ -1564,6 +1578,105 @@ class StartCornerFlowTests(FlowTestBase):
         with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
             with self.assertRaises(SystemExit):
                 ssb.parseArguments(["--start", "top-left"])
+
+
+class MinusSignDepthTests(FlowTestBase):
+    """A depth may be typed with a minus sign: "-0.05" means 0.05 mm deeper.
+
+    The script shows depths as negative ("Pass 1: -0.3 mm", "Another pass at
+    -0.3 mm?"), so the owner typed "-0.05" at the next-pass prompt and was
+    told "It must be more than 0."  A depth only goes down, so the minus sign
+    is accepted and dropped.  Other values (feed, stepover, ...) still refuse it.
+    """
+
+    def askWith(self, function, answers, default=None):
+        operator = Operator([("", answer) for answer in answers])
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            value = function(operator, "? ", default=default)
+        self.assertEqual(operator.script, [], "not every answer was asked for")
+        return value, printed.getvalue()
+
+    def testAskDepthTakesEitherSign(self):
+        self.assertEqual(self.askWith(ssb.askDepth, ["-0.05"])[0], 0.05)
+        self.assertEqual(self.askWith(ssb.askDepth, ["0.05"])[0], 0.05)
+        self.assertEqual(self.askWith(ssb.askDepth, [""], default=0.3)[0], 0.3)
+
+    def testAskDepthRefusesZeroAndNonsense(self):
+        value, printed = self.askWith(ssb.askDepth, ["0", "-0", "abc", "nan", "-0.05"])
+        self.assertEqual(value, 0.05)
+        self.assertEqual(printed.count("It must be more than 0"), 3)   # 0, -0, nan
+        self.assertIn("'abc' is not a number.", printed)
+
+    def testAskPositiveStillRefusesAMinus(self):
+        value, printed = self.askWith(ssb.askPositive, ["-300", "300"])
+        self.assertEqual(value, 300)
+        self.assertIn("It must be more than 0.", printed)
+
+    def nextPass(self, typed):
+        return self.run_flow(
+            START + PARAMETERS + FIRST_PASS
+            + [("Another pass at -0.3 mm (total -0.6)", "c"),
+               ("How much deeper for the next pass, in mm (e.g. 0.05): ", typed),
+               ("Another pass at -0.05 mm (total -0.4)", "s")] + PARK + END)
+
+    def testNextPassWithAMinusSign(self):
+        grbl, surfacing, operator = self.nextPass("-0.05")
+        self.assertEqual(surfacing.totalDepth, 0.35)
+        self.assertIn("  Next pass: 0.05 mm deeper (total -0.35 mm).", self.output)
+        self.assertIn("G53 G1 Z-80.350 F50", grbl.lines)
+
+    def testNextPassWithoutAMinusSign(self):
+        grbl, surfacing, operator = self.nextPass("0.05")
+        self.assertEqual(surfacing.totalDepth, 0.35)
+        self.assertIn("  Next pass: 0.05 mm deeper (total -0.35 mm).", self.output)
+
+    def testNextPassRefusesZeroAndNonsense(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS
+            + [("Another pass at -0.3 mm (total -0.6)", "c")]
+            + [("How much deeper for the next pass", typed) for typed in ("0", "-0", "abc", "-0.05")]
+            + [("Another pass at -0.05 mm (total -0.4)", "s")] + PARK + END)
+        self.assertEqual(surfacing.totalDepth, 0.35)
+        self.assertEqual(surfacing.passesDone, 2)
+
+    def testSummaryDepthWithAMinusSign(self):
+        parameters = [(expected, "-0.05" if expected.startswith("Depth per pass") else reply)
+                      for expected, reply in PARAMETERS]
+        grbl, surfacing, operator = self.run_flow(
+            START + parameters + [("y to start", "y"), ("Pass 1: -0.05 mm (total -0.05)", ""),
+                                  ("Another pass at -0.05 mm (total -0.1)", "s")] + PARK + END)
+        self.assertEqual(surfacing.choices['depth'], 0.05)
+        self.assertTrue(any(line.startswith("  5. Depth this pass: 0.05 mm (typed)")
+                            for line in self.output))
+        self.assertIn("G53 G1 Z-80.050 F50", grbl.lines)
+
+    def testSummaryDepthChangedWithAMinusSign(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + [("y to start", "5"), ("Depth per pass in mm [0.3", "-0.2"),
+                                  ("y to start", "y"), ("Pass 1: -0.2 mm (total -0.2)", ""),
+                                  ("Another pass", "s")] + PARK + END)
+        self.assertEqual(surfacing.choices['depth'], 0.2)
+
+    def testFeedStillRefusesAMinus(self):
+        parameters = [(expected, "-300" if expected.startswith("Feed") else reply)
+                      for expected, reply in PARAMETERS]
+        feedAt = next(i for i, (expected, _) in enumerate(parameters) if expected.startswith("Feed"))
+        parameters.insert(feedAt + 1, ("Feed in mm/min [286", ""))   # asked again; Enter: 286
+        grbl, surfacing, operator = self.run_flow(
+            START + parameters + [("y to start", "q"), ("Press Enter to park", "")])
+        self.assertEqual(surfacing.choices['feed'], 286)
+
+    def testDepthOptionTakesAMinusSign(self):
+        options = ssb.parseArguments(["--profile", self.profilePath, "--depth", "-0.2"])
+        self.assertEqual(options.depth, 0.2)
+        for zero in ("0", "-0"):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                ssb.parseArguments(["--profile", self.profilePath, "--depth", zero])
+
+    def testFeedOptionStillRefusesAMinus(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--profile", self.profilePath, "--feed", "-300"])
 
 
 class DocstringTests(unittest.TestCase):

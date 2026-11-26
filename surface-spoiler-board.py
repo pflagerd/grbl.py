@@ -25,7 +25,9 @@ The flow, with nothing moving before an Enter from you:
      for each one not given on the command line, then a summary you can change.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
      cap (--max-total-depth, default 3 mm).  Then one raster pass, and
-     "Another pass ...? [Y / change depth / stop]".  A pass cuts lines along X
+     "Another pass ...? [Y / change depth / stop]".  A depth (here, in the
+     summary or as --depth) may be typed with or without a minus sign:
+     -0.05 and 0.05 both mean 0.05 mm deeper.  A pass cuts lines along X
      from the front-left corner, front to back (--one-way: every line left to
      right); with --start back-right, from the back-right corner, back to
      front (--one-way: right to left).  The cutting (climb) is the same.
@@ -692,6 +694,30 @@ def askPositive(ask, prompt, default=None):
         return value
 
 
+def askDepth(ask, prompt, default=None):
+    # How much deeper to cut, in mm: like askPositive(), but a minus sign is
+    # allowed and dropped, so "-0.05" and "0.05" both mean 0.05 mm deeper.
+    # Why: the script itself shows depths as negative ("Pass 1: -0.3 mm",
+    # "Another pass at -0.3 mm?"), so typing a minus is natural, and a depth
+    # only ever goes down: there is nothing else "-0.05" could mean.  Zero
+    # (and "-0", which float() reads as -0.0, equal to 0) and NaN are still
+    # refused.  Other values (feed, stepover, ...) keep askPositive(): there a
+    # minus sign is a mistake.
+    while True:
+        text = ask(prompt).strip()
+        if not text and default is not None:
+            return default
+        try:
+            value = float(text)
+        except ValueError:
+            print(f"  '{text}' is not a number.")
+            continue
+        if math.isnan(value) or value == 0:
+            print("  It must be more than 0 (a minus sign is fine: -0.05 means 0.05 mm deeper).")
+            continue
+        return abs(value)
+
+
 def askNewBit(ask, out, bits, path, diameter=None):
     """Ask for a name (and the diameter, unless known), plus flutes; save.  Returns the name."""
     while True:
@@ -1085,8 +1111,10 @@ class Surfacing:
                 label = {'depth': "Depth per pass in mm", 'feed': "Feed in mm/min",
                          'plunge': "Plunge feed in mm/min", 'spindle': "Spindle speed (S word)",
                          'stepover': "Stepover in mm", 'clearance': "Clearance in mm"}[name]
-                typed = askPositive(self.ask, f"{label} [{value:g}, "
-                                              f"{self.defaultReason(name, source)}]: ", default=value)
+                # The depth takes a minus sign too (see askDepth()).
+                askNumber = askDepth if name == 'depth' else askPositive
+                typed = askNumber(self.ask, f"{label} [{value:g}, "
+                                            f"{self.defaultReason(name, source)}]: ", default=value)
                 if typed != value:
                     value, source = typed, 'typed'
             if name == 'spindle':
@@ -1288,7 +1316,7 @@ class Surfacing:
             try:
                 answer = self.ask(prompt).strip().lower()
                 if answer.startswith('c'):
-                    return askPositive(self.ask, "Depth for the next pass in mm: ")
+                    return askDepth(self.ask, "How much deeper for the next pass, in mm (e.g. 0.05): ")
             except EOFError:
                 self.out("  (input closed: stopping)")
                 return None
@@ -1363,8 +1391,15 @@ class Surfacing:
                 depth = answer
                 continue
             if self.manual:
-                depth, mustChange = answer, False   # confirm it with "Router ON? ..."
+                # The "Router ON? Another pass at -X mm (total -Y)?" question
+                # that comes next already shows the new numbers, so no
+                # "Next pass:" line here: it would say the same thing twice.
+                depth, mustChange = answer, False
                 continue
+            # Say what was understood (a typed "-0.05" became 0.05 deeper)
+            # before it cuts.
+            after = round(self.totalDepth + answer, 3)
+            self.out(f"  Next pass: {answer:g} mm deeper (total -{after:g} mm).")
             return answer
 
     def cutPasses(self):
@@ -1587,6 +1622,10 @@ def parseArguments(argv=None):
     arguments = parser.parse_args(argv)
     if arguments.bit and arguments.diameter is not None:
         parser.error("give --bit or --diameter, not both")
+    if arguments.depth is not None:
+        # As at the prompts (askDepth()): --depth -0.2 means 0.2 mm deeper.
+        # --depth 0 (or -0) is still refused just below.
+        arguments.depth = abs(arguments.depth)
     for name in ('diameter', 'stepover', 'depth', 'feed', 'plunge', 'spindle', 'clearance',
                  'max_total_depth'):
         value = getattr(arguments, name)
