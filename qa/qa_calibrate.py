@@ -294,7 +294,7 @@ def makeChecklist(machine):
                         "steps": [
                             start(CALIBRATE, "\"Connecting to /dev/ttyUSB0 @ 115200...\", "
                                   "\"Connected. Grbl 1.1h, N settings read.\", \"Keep a hand "
-                                  "near reset/power at all times.\" and a prompt to clear the "
+                                  "near the E-stop button at all times.\" and a prompt to clear the "
                                   "work area.",
                                   intro="Now one run of the full calibration. This step starts "
                                         "it, and the steps after it follow its prompts in "
