@@ -34,8 +34,9 @@ The flow, with nothing moving before an Enter from you:
   5. Stepover, depth per pass, feed, plunge, spindle and clearance: a prompt
      for each one not given on the command line, then a summary you can change.
      The stepover (--stepover, or at its prompt) is in mm (10) or a
-     percentage of the bit diameter (25%); a percentage follows the bit if
-     you change the bit at the summary, mm stay as given.
+     percentage of the bit diameter (25%).  If you change the bit at the
+     summary, a percentage follows the new diameter (given or typed); a
+     --stepover in mm stays as given, a stepover typed in mm is asked again.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
      cap (--max-total-depth, default 3 mm).  Then one raster pass, and
      "Another pass ...? [Y / change depth / stop]".  A depth (here, in the
@@ -862,16 +863,17 @@ def askDepth(ask, prompt, default=None):
 
 
 def askStepover(ask, prompt, diameter, default=None):
-    # The stepover in mm, typed as mm ("10") or as a percentage of this bit's
-    # diameter ("25%"); see parseStepover().  Returns mm, since the bit is
-    # known by now.  (A percentage typed here is not remembered as one: a
-    # bit change at the summary asks for the stepover again anyway.)
+    # The stepover typed as mm ("10") or as a percentage of the bit diameter
+    # ("25%"); see parseStepover().  Returns what was typed, as parseStepover()
+    # gives it (mm, or a StepoverPercent), or the default (mm) on Enter.  It
+    # is not turned into mm here, so the caller can remember a percentage as
+    # a percentage: it follows the bit if the bit is changed at the summary.
     while True:
         text = ask(prompt).strip()
         if not text and default is not None:
             return default
         try:
-            return stepoverMm(parseStepover(text), diameter)
+            return parseStepover(text)
         except ValueError as error:
             print(f"  {error}")
 
@@ -1143,6 +1145,10 @@ class Surfacing:
         self.boardName = None    # the saved board (--board) whose corners are in use
         self.choices = {}
         self.sources = {}
+        # A stepover typed at its prompt as a percentage ("25%"), kept as one so
+        # that a bit change at the summary works out its mm again for the new
+        # diameter, without asking.  None when typed in mm, or not typed.
+        self.typedStepover = None
         self.totalDepth = 0.0
         self.passesDone = 0
         self.lastDepth = None
@@ -1277,6 +1283,11 @@ class Surfacing:
             else:
                 self.choices['start'] = self.options.start or FRONT_LEFT
             self.sources['start'] = 'given'
+        elif name == 'stepover' and self.typedStepover is not None:
+            # Typed as a percentage before the bit was changed: the same
+            # percentage of the new diameter, and still 'typed'.
+            self.choices[name] = self.typedStepover.mm(self.diameter())
+            self.sources[name] = 'typed'
         else:
             value, source = self.derived(name)
             if source != 'command line' and not (name == 'spindle' and self.manual):
@@ -1287,7 +1298,14 @@ class Surfacing:
                          'clearance': "Clearance in mm"}[name]
                 prompt = f"{label} [{value:g}, {self.defaultReason(name, source)}]: "
                 if name == 'stepover':   # mm or a percentage (see askStepover())
-                    typed = askStepover(self.ask, prompt, self.diameter(), default=value)
+                    answer = askStepover(self.ask, prompt, self.diameter(), default=value)
+                    typed = stepoverMm(answer, self.diameter())
+                    # Remember a percentage, but only one that changed the value
+                    # (Enter, or the default typed again, stays the default).
+                    # A stepover typed in mm is asked again after a bit change:
+                    # mm that suited one bit may not suit another.
+                    if isinstance(answer, StepoverPercent) and typed != value:
+                        self.typedStepover = answer
                 else:   # the depth takes a minus sign too (see askDepth())
                     askNumber = askDepth if name == 'depth' else askPositive
                     typed = askNumber(self.ask, prompt, default=value)
@@ -1309,12 +1327,17 @@ class Surfacing:
             self.boardName = None
         if name == 'touch':
             self.options.touch_z = None   # changing the touch-off means jogging it
+        if name == 'stepover':
+            self.typedStepover = None     # changing the stepover asks for it again
         if name == 'bit':
             for dependent in BIT_DEPENDENT:
                 # A --stepover percentage is kept, but its mm follow the new
                 # diameter: forgetting the mm makes fill() work them out
                 # again from the percentage (no question: it is still
-                # 'command line').  A --stepover in mm stays as given.
+                # 'command line').  A --stepover in mm stays as given.  A
+                # percentage typed at the prompt follows the bit the same way
+                # (fill() uses self.typedStepover); one typed in mm is asked
+                # again, like the other typed values.
                 followsBit = (dependent == 'stepover'
                               and isinstance(getattr(self.options, 'stepover', None),
                                              StepoverPercent))

@@ -2202,6 +2202,43 @@ class StepoverPercentTests(FlowTestBase):
         self.assertIn("  4. Stepover: 10 mm (40% of the 25 mm diameter, from --stepover)",
                       self.output)
 
+    def changeTheBitAfterTyping(self, typed, afterChange):
+        # No --stepover: typed at its prompt with the 50 mm bit, then at the
+        # summary 1 (bit) and pick the 25 mm bit.
+        ssb.saveBits(self.bitsPath, {"25mm": {"diameter": 25.0}, "50mm": {"diameter": 50.0}})
+        script = [("Press Enter to home", ""), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+                  ("Save these corners", "n"), ("just touches", ""),
+                  ("Stepover in mm, or % of the diameter [20, 40% of the 50 mm diameter]", typed)
+                  ] + self.REST_50 + [
+                  ("y to start", "1"), ("Pick a bit (1-2)", "1")] + afterChange + [
+                  ("Depth per pass", ""), ("Feed in mm/min [400, from 25 mm bit]", ""),
+                  ("Plunge feed", "")] + QUIT
+        grbl, surfacing, operator = self.run_flow(script, arguments=("--bit", "50mm"))
+        return surfacing, operator
+
+    def testTypedPercentFollowsABitChange(self):
+        surfacing, operator = self.changeTheBitAfterTyping("25%", [])
+        self.assertIn("  4. Stepover: 12.5 mm (25% of the 50 mm diameter, typed)", self.output)
+        self.assertIn("  4. Stepover: 6.25 mm (25% of the 25 mm diameter, typed)", self.output)
+        self.assertEqual(surfacing.choices['stepover'], 6.25)
+        self.assertEqual(sum("Stepover in mm" in prompt for prompt in operator.prompts), 1)
+
+    def testTypedMillimetresAskedAgainAfterABitChange(self):
+        # mm that suited the 50 mm bit may not suit the 25 mm one: asked again.
+        surfacing, operator = self.changeTheBitAfterTyping(
+            "10", [("Stepover in mm, or % of the diameter [10, 40% of the 25 mm diameter]", "")])
+        self.assertEqual(surfacing.choices['stepover'], 10.0)
+        self.assertEqual(surfacing.sources['stepover'], 'derived')
+
+    def testChangingTheStepoverForgetsATypedPercent(self):
+        # 4 at the summary asks again; a mm answer then is not a percentage.
+        prompt = "Stepover in mm, or % of the diameter [20, 40% of the 50 mm diameter]"
+        grbl, surfacing, operator = self.run_flow(
+            self.START_50 + [(prompt, "25%")] + self.REST_50
+            + [("y to start", "4"), (prompt, "10")] + QUIT, arguments=("--diameter", "50"))
+        self.assertIsNone(surfacing.typedStepover)
+        self.assertEqual(surfacing.choices['stepover'], 10.0)
+
     def testHelpShowsBothForms(self):
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit):
