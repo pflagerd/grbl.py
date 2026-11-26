@@ -15,6 +15,7 @@ Run: python testSurfaceSpoilerBoard.py
 
 import importlib.util
 import io
+import hashlib
 import json
 import os
 import re
@@ -209,6 +210,87 @@ class GeometryTests(unittest.TestCase):
         # 23 lines of 435 mm plus 22 steps of 13.64 mm plus the 1.3 mm plunge, at feed.
         self.assertAlmostEqual(p.cutLength, 23 * 435 + 300 + 1.3, places=1)
         self.assertGreater(p.seconds, p.cutLength / 286 * 60)
+
+
+class StartCornerTests(unittest.TestCase):
+    """--start back-right: the front-left pass turned half a turn, nothing else changed."""
+
+    BACK_RIGHT_X = BOARD[2] + 17.5     # xEnd: the right edge plus the overrun
+
+    def testFrontLeftIsTheDefaultAndByteForByteUnchanged(self):
+        # sha256 of the whole G-code from master, before --start existed.  If
+        # this fails, the default (front-left) G-code has changed: on purpose
+        # or not, the operator's usual cut is no longer what it was.
+        golden = {ssb.ZIGZAG: "f92973c15389f09f5c10afb4b1424e5a8dbd8b8280ff59807be778ccf4283a52",
+                  ssb.ONE_WAY: "3d7f6dd115feec4c39b24bf243710a42f4bd45db299e4704219ec80cc4140bf4"}
+        for pattern, digest in golden.items():
+            for p in (plan(pattern=pattern), plan(pattern=pattern, start=ssb.FRONT_LEFT)):
+                self.assertEqual(hashlib.sha256("\n".join(p.gcode).encode()).hexdigest(), digest,
+                                 pattern)
+
+    def testFirstLineAtTheBackLastAtTheFront(self):
+        p = plan(start=ssb.BACK_RIGHT)
+        x0, y0, x1, y1 = BOARD
+        self.assertEqual(p.lineYs[0], y1)
+        self.assertEqual(p.lineYs[-1], y0)
+        self.assertEqual(p.lineYs, sorted(p.lineYs, reverse=True))
+        ys = [words(line)['Y'] for line in p.gcode if 'Y' in words(line)]
+        self.assertEqual(ys, sorted(ys, reverse=True))
+
+    def testSameLinesStepoverAndLengths(self):
+        for pattern in ssb.PATTERNS:
+            front = plan(pattern=pattern)
+            back = plan(pattern=pattern, start=ssb.BACK_RIGHT)
+            self.assertEqual(back.lineYs, list(reversed(front.lineYs)), pattern)
+            self.assertEqual(back.stepover, front.stepover)
+            self.assertEqual((back.xStart, back.xEnd), (front.xStart, front.xEnd))
+            self.assertEqual(len(cuttingXMoves(back.gcode)), len(cuttingXMoves(front.gcode)))
+            self.assertAlmostEqual(back.cutLength, front.cutLength, places=6)
+            self.assertAlmostEqual(back.rapidLength, front.rapidLength, places=6)
+            self.assertAlmostEqual(back.seconds, front.seconds, places=6)
+            self.assertEqual(len(back.gcode), len(front.gcode))
+
+    def testOneWayLinesRunRightToLeft(self):
+        p = plan(pattern=ssb.ONE_WAY, start=ssb.BACK_RIGHT)
+        moves = cuttingXMoves(p.gcode)
+        self.assertEqual(len(moves), 23)
+        self.assertTrue(all((start, end) == (p.xEnd, p.xStart) for start, end in moves))
+        # Each return is a lifted rapid back to the right-hand end.
+        returns = [line for line in p.gcode if line.startswith(f"G53 G0 X{p.xEnd:.3f} Y")]
+        self.assertEqual(len(returns), 23)       # the start, then one per line after the first
+
+    def testZigzagStartsRightToLeft(self):
+        p = plan(start=ssb.BACK_RIGHT)
+        moves = cuttingXMoves(p.gcode)
+        self.assertEqual(len(moves), 23)
+        for index, (start, end) in enumerate(moves):
+            self.assertEqual(end < start, index % 2 == 0, f"line {index}")
+
+    def testInitialRapidGoesToTheBackRight(self):
+        p = plan(start=ssb.BACK_RIGHT)
+        first = next(line for line in p.gcode if 'X' in words(line))
+        self.assertEqual(first, f"G53 G0 X{self.BACK_RIGHT_X:.3f} Y{BOARD[3]:.3f}")
+        self.assertEqual(p.xEnd, self.BACK_RIGHT_X)
+        # The estimate starts over that corner: the rapid there counts nothing,
+        # just as the front-left rapid counts nothing from the front-left.
+        self.assertAlmostEqual(p.rapidLength, plan().rapidLength, places=6)
+
+    def testClampingAndNotesUnchanged(self):
+        board = (-614.0, -580.0, -5.0, -280.0)
+        front = plan(board=board)
+        back = plan(board=board, start=ssb.BACK_RIGHT)
+        self.assertEqual((back.xStart, back.xEnd), (front.xStart, front.xEnd))
+        self.assertEqual(back.notes, front.notes)
+        for line in back.gcode:
+            w = words(line)
+            if 'X' in w:
+                self.assertTrue(BOUNDS['X'][0] <= w['X'] <= BOUNDS['X'][1])
+        first = next(line for line in back.gcode if 'X' in words(line))
+        self.assertEqual(first, "G53 G0 X-0.010 Y-280.000")   # the clamped right end
+
+    def testUnknownStartRefused(self):
+        with self.assertRaisesRegex(ssb.PlanRefused, "start corner"):
+            plan(start="top-left")
 
 
 class DepthTests(unittest.TestCase):
@@ -617,8 +699,17 @@ class SummaryTests(FlowTestBase):
         self.assertFalse(any(line.endswith("F286") for line in grbl.lines))
 
     def testBackChangesTheMostRecent(self):
+        # The most recent step is the start corner (11).
         grbl, surfacing, operator = self.run_flow(
-            START + PARAMETERS + [("y to start", "b"), ("Pattern (zigzag / one-way)", "one"),
+            START + PARAMETERS + [("y to start", "b"), ("Start corner (front-left / back-right)",
+                                                         "back"),
+                                  ("y to start", "y"), ("Pass 1", ""), ("Another pass", "s")]
+            + PARK + END)
+        self.assertEqual(surfacing.choices['start'], ssb.BACK_RIGHT)
+
+    def testChangeThePattern(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + [("y to start", "10"), ("Pattern (zigzag / one-way)", "one"),
                                   ("y to start", "y"), ("Pass 1", ""), ("Another pass", "s")]
             + PARK + END)
         self.assertEqual(surfacing.choices['pattern'], ssb.ONE_WAY)
@@ -640,7 +731,7 @@ class SummaryTests(FlowTestBase):
     def testRefusedPlanHasNoYes(self):
         grbl, surfacing, operator = self.run_flow(
             START + [("Stepover in mm [14,", "40")] + PARAMETERS[1:]
-            + [("1-10 to change", "y"), ("1-10 to change", "4"), ("Stepover in mm [14,", ""),
+            + [("1-11 to change", "y"), ("1-11 to change", "4"), ("Stepover in mm [14,", ""),
                ("y to start", "q"), ("Press Enter to park", "")])
         self.assertIn("REFUSED", self.text())
         self.assertFalse(operator.prompts[-3].startswith("y to start"))
@@ -1178,6 +1269,54 @@ class OperatorWordingTests(FlowTestBase):
                                        clock=lambda: next(ticks)))
         self.assertIn("use the E-stop button if it is moving.", self.text())
         self.assertIn("soft reset (Ctrl-X)", self.text())   # the Grbl reset keeps its name
+
+
+class StartCornerFlowTests(FlowTestBase):
+    """--start through the operator flow: the summary, every pass, the park."""
+
+    def testDefaultIsFrontLeft(self):
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        self.assertEqual(options.start, ssb.FRONT_LEFT)
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END)
+        self.assertEqual(surfacing.choices['start'], ssb.FRONT_LEFT)
+        self.assertIn("  11. Start corner: front-left (front to back, the first line left to right; "
+                      "the first lines are nearest you)", self.output)
+        self.assertIn("  10. Pattern: zigzag (alternate +X / -X)", self.output)
+        self.assertIn("(front to back)", self.text())
+
+    def testBackRightEveryPassAndParkStaysFrontLeft(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "")]
+            + [("Another pass", "s")] + PARK + END,
+            arguments=("--diameter", "35", "--one-way", "--start", "back-right"))
+        self.assertIn("  11. Start corner: back-right (back to front, the first line right to "
+                      "left; ends at the front, nearer the park spot)", self.output)
+        self.assertIn("  10. Pattern: one-way (every line -X, lift to return)", self.output)
+        self.assertIn("Y-280.000 to Y-580.000 (back to front)", self.text())
+        # Each pass starts with a rapid to the back-right corner (plus the overrun).
+        starts = [i for i, line in enumerate(grbl.lines) if line.startswith("M3")]
+        self.assertEqual(len(starts), 2)
+        for m3 in starts:
+            first = next(line for line in grbl.lines[m3:] if "X" in line)
+            self.assertEqual(first, "G53 G0 X-182.500 Y-280.000")
+        self.assertTrue(all(end < start for start, end in cuttingXMoves(grbl.lines)))
+        # The park is unchanged: over the front-left corner.
+        self.assertEqual(grbl.lines[-1], "G53 G0 X-600.000 Y-580.000")
+
+    def testChangeTheStartCornerInTheSummary(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + [("y to start", "11"), ("Start corner (front-left / back-right)",
+                                                          "f"),
+                                  ("y to start", "q"), ("Press Enter to park", "")],
+            arguments=("--diameter", "35", "--start", "back-right"))
+        self.assertEqual(surfacing.choices['start'], ssb.FRONT_LEFT)
+        self.assertIn("  11. Start corner: back-right", "\n".join(self.output))
+
+    def testRejectsAnUnknownCorner(self):
+        with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):
+                ssb.parseArguments(["--start", "top-left"])
 
 
 class DocstringTests(unittest.TestCase):
