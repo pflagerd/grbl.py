@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Surface (level) the plywood spoilboard with a wide flat bit (issue #13, step 12).
 
-    python surface-spoiler-board.py [--bit NAME | --diameter MM] [--one-way] ...
+    python surface-spoiler-board.py [--bit NAME | --diameter MM]
+                                    [--corners X0 Y0 X1 Y1 | --board NAME] [--one-way] ...
 
 The flow, with nothing moving before an Enter from you:
   1. Pick a saved surfacing bit from profiles/bits.json, or add one.
   2. You may turn the motor knob NOW, for a rough move, before homing.  After
      homing, every move is by keyboard jog (see "Why the knob" below).  Home.
   3. Jog the bit centre to the board's front-left corner (low X, low Y), Enter;
-     then to the back-right corner (high X, high Y), Enter.
-  4. Jog the bit down until it just touches the plywood top, Enter.  That
+     then to the back-right corner (high X, high Y), Enter.  Then an offer to
+     save the two corners as a named board in profiles/boards.json.
+     --corners X0 Y0 X1 Y1 skips both jogs: it gives those two bit-centre
+     positions in machine coordinates (MPos).  --board NAME skips them too,
+     using a saved board's corners; they are only right if the new board sits
+     where the measured one did (against the same stops).  Either way the
+     corners are checked for order and against the soft limits before homing.
+  4. Jog the bit down until it just touches the plywood top, Enter (with
+     --corners or --board, jog it over the plywood first).  That
      becomes work Z0 (G54, G10 L20 P1 Z0); its machine z is recorded.
   5. Stepover, depth per pass, feed, plunge, spindle and clearance: a prompt
      for each one not given on the command line, then a summary you can change.
@@ -31,8 +39,10 @@ the G54 X/Y offset and can be checked directly against the soft limits.
 The parts, kept separate so they can be tested without a machine:
     defaultFeed(), resolveParameter()   pure: where each default comes from
     planPassDepth(), checkZRoom()       pure: depth arithmetic, the $132 check
+    cornerProblems(), checkGivenCorners()   pure: are the two corners usable?
     planRaster()                        pure: board + bit + bounds -> G-code
     loadBits(), saveBits(), chooseBit() the bit list (profiles/bits.json)
+    loadBoards(), saveBoards(), chooseBoard()   saved corners (profiles/boards.json)
     streamGcode(), waitForIdle(), safeStop()   talk to Grbl
     Surfacing.run()                     the operator flow
     Surfacing.runSafely()               the same, with safeStop() on Ctrl-C or any error
@@ -88,6 +98,7 @@ PATTERNS = (ZIGZAG, ONE_WAY)
 SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PROFILE = os.path.join(SCRIPT_DIRECTORY, "profiles", "6060 ProverXL V1.json")
 BITS_FILE = "bits.json"      # next to the machine profiles; shared across machines
+BOARDS_FILE = "boards.json"  # saved board corners, next to bits.json
 
 
 class PlanRefused(ValueError):
@@ -304,6 +315,51 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     return plan
 
 
+def cornerProblems(x0, y0, x1, y1):
+    """What is wrong with the order of two corners, as a list of phrases (empty: fine).
+
+    Shared by the jog path (measureBoard()) and --corners, so both refuse the
+    same boards: the back-right corner must be at least MINIMUM_BOARD further
+    in X and in Y than the front-left one.  planRaster() checks it again,
+    because a plan must never trust its caller.
+    """
+    problems = []
+    if x1 - x0 < MINIMUM_BOARD:
+        problems.append(f"X{x1:.3f} is not to the right of X{x0:.3f}")
+    if y1 - y0 < MINIMUM_BOARD:
+        problems.append(f"Y{y1:.3f} is not behind Y{y0:.3f}")
+    return problems
+
+
+def checkGivenCorners(corners, bounds, margin=jogModule.LIMIT_MARGIN, given="--corners",
+                      fix="Please run this again with corrected --corners."):
+    """Raise PlanRefused if --corners can't be used; nothing is sent either way.
+
+    Called before homing.  A jogged corner is inside the soft limits by
+    construction (the jog stops at them), but typed numbers can be anything,
+    so they are checked against the same box planRaster() uses.  There is no
+    "try again" here: the numbers came from the command line, so the operator
+    fixes them there and runs the script again.  given/fix: how to name the
+    corners and what to do, so a saved board (--board) gets its own advice.
+    """
+    x0, y0, x1, y1 = corners
+    if not all(math.isfinite(value) for value in corners):
+        raise PlanRefused(f"The corners from {given} must be ordinary numbers.  {fix}")
+    problems = cornerProblems(x0, y0, x1, y1)
+    if problems:
+        raise PlanRefused(f"The corners from {given} are out of order: {'; '.join(problems)}.  The "
+                          "second corner (X1 Y1, back-right) must be at least "
+                          f"{MINIMUM_BOARD:g} mm to the right of and behind the first (X0 Y0, "
+                          f"front-left).  {fix}")
+    xLow, xHigh = bounds['X'][0] + margin, bounds['X'][1] - margin
+    yLow, yHigh = bounds['Y'][0] + margin, bounds['Y'][1] - margin
+    if x0 < xLow - 1e-9 or x1 > xHigh + 1e-9 or y0 < yLow - 1e-9 or y1 > yHigh + 1e-9:
+        raise PlanRefused(f"The corners from {given} are outside the soft-limit travel: X must be "
+                          f"from {xLow:.3f} to {xHigh:.3f} and Y from {yLow:.3f} to {yHigh:.3f} "
+                          "(machine coordinates, MPos, as the position display shows after "
+                          f"homing).  {fix}")
+
+
 def formatDuration(seconds):
     minutes, seconds = divmod(int(round(seconds)), 60)
     return f"{minutes} min {seconds:02d} s"
@@ -366,6 +422,101 @@ def writeJsonAtomically(path, data):
         if os.path.exists(temporary):
             os.unlink(temporary)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Saved boards: profiles/boards.json
+# ---------------------------------------------------------------------------
+#
+# {"boards": {"600x400": {"x0": -600.0, "y0": -580.0, "x1": -200.0, "y1": -280.0,
+#                         "note": "..."}}, "schemaVersion": 1}
+# Machine coordinates (MPos) of the bit centre, as measured after homing.  The
+# same shape and the same atomic write as bits.json, so a stack of similar
+# spoilboards can be surfaced one after another without measuring each.
+# Shared across machines like bits.json; each board's numbers only make sense
+# on the machine (and against the stops) where they were measured.
+
+def boardsPath(profilePath):
+    return os.path.join(os.path.dirname(os.path.abspath(profilePath)), BOARDS_FILE)
+
+
+def loadBoards(path):
+    """{name: entry}; an empty dict if the file does not exist yet."""
+    if not os.path.exists(path):
+        return {}
+    with open(path) as jsonFile:
+        return json.load(jsonFile).get("boards", {})
+
+
+def saveBoards(path, boards):
+    writeJsonAtomically(path, {"schemaVersion": 1, "boards": boards})
+
+
+def boardCorners(entry):
+    return (float(entry['x0']), float(entry['y0']), float(entry['x1']), float(entry['y1']))
+
+
+def describeBoard(name, entry):
+    x0, y0, x1, y1 = boardCorners(entry)
+    text = (f"{name}: front-left X{x0:.3f} Y{y0:.3f}, back-right X{x1:.3f} Y{y1:.3f} "
+            f"({x1 - x0:.3f} x {y1 - y0:.3f} mm)")
+    if entry.get('note'):
+        text += f" - {entry['note']}"
+    return text
+
+
+def chooseBoard(path, name):
+    """The corners of the saved board `name`, or PlanRefused listing the saved names."""
+    try:
+        boards = loadBoards(path)
+    except (OSError, ValueError) as error:
+        raise PlanRefused(f"Could not read {path}: {error}.") from None
+    if name not in boards:
+        known = ", ".join(sorted(boards)) or "none saved yet"
+        raise PlanRefused(f"No board called '{name}' in {path} ({known}).  Please run this again "
+                          "with one of those names, or without --board to jog the corners.")
+    try:
+        return boardCorners(boards[name])
+    except (KeyError, TypeError, ValueError):
+        raise PlanRefused(f"The board '{name}' in {path} needs numbers x0, y0, x1 and "
+                          "y1.") from None
+
+
+def offerSaveBoard(ask, out, path, corners):
+    """After jogged corners: offer to save them under a name.  Returns the name, or None.
+
+    Saving is a convenience, so it must never stop the cut: a file that can't
+    be read or written gives a warning, and the run carries on.
+    """
+    if not calibrate.askYesNo(ask, "Save these corners as a board for next time?"):
+        return None
+    try:
+        boards = loadBoards(path)
+    except (OSError, ValueError) as error:
+        out(f"  Warning: could not read {path} ({error}), so the corners were not saved.  "
+            "The cut can go ahead.")
+        return None
+    while True:
+        name = ask("Name for this board (e.g. 600x400): ").strip()
+        if not name:
+            out("  The name can't be empty.")
+            continue
+        if name in boards and not calibrate.askYesNo(
+                ask, f"There is already a board {describeBoard(name, boards[name])}.  "
+                     "Overwrite it?"):
+            continue   # keep the old one; ask for another name
+        break
+    x0, y0, x1, y1 = corners
+    entry = {'x0': round(x0, 3), 'y0': round(y0, 3), 'x1': round(x1, 3), 'y1': round(y1, 3)}
+    boards[name] = entry
+    try:
+        saveBoards(path, boards)
+    except OSError as error:
+        out(f"  Warning: could not save the board in {path} ({error}).  The cut can go ahead; "
+            "you will need to measure the corners again next time.")
+        return None
+    out(f"  Saved board '{name}' in {path}; next time use --board {name}.")
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +858,8 @@ class Surfacing:
         self.clock = clock
         self.bitsPath = bitsPath(profilePath)
         self.bits = loadBits(self.bitsPath)
+        self.boardsPath = boardsPath(profilePath)
+        self.boardName = None    # the saved board (--board) whose corners are in use
         self.choices = {}
         self.sources = {}
         self.totalDepth = 0.0
@@ -775,7 +928,9 @@ class Surfacing:
         if name == 'board':
             x0, y0, x1, y1 = value
             return (f"front-left X{x0:.3f} Y{y0:.3f}, back-right X{x1:.3f} Y{y1:.3f} "
-                    f"({x1 - x0:.3f} x {y1 - y0:.3f} mm)")
+                    f"({x1 - x0:.3f} x {y1 - y0:.3f} mm)"
+                    + ((f" (from --board {self.boardName})" if self.boardName
+                        else " (from --corners)") if source == 'command line' else ""))
         if name == 'touch':
             return f"plywood top at MPos z={value:.3f} (work Z0)"
         if name == 'pattern':
@@ -834,6 +989,9 @@ class Surfacing:
         self.choices.pop(name, None)
         if name in vars(self.options) and name != 'bit':
             setattr(self.options, name, None)
+        if name == 'board' and getattr(self.options, 'corners', None) is not None:
+            self.options.corners = None   # changing the board means jogging the corners
+            self.boardName = None
         if name == 'bit':
             for dependent in BIT_DEPENDENT:
                 if self.sources.get(dependent) != 'command line':
@@ -853,27 +1011,45 @@ class Surfacing:
                 raise Quit()
 
     def measureBoard(self):
+        corners = getattr(self.options, 'corners', None)
+        if corners is not None:
+            # Typed on the command line (or read from boards.json by run() for
+            # --board): no jogging.  run() has already checked them
+            # (checkGivenCorners) before homing, so they are used as given.
+            x0, y0, x1, y1 = corners
+            self.sources['board'] = 'command line'
+            given = f"--board {self.boardName}" if self.boardName else "--corners"
+            self.out(f"  Corners from {given}: front-left X{x0:.3f} Y{y0:.3f}, back-right "
+                     f"X{x1:.3f} Y{y1:.3f}; board {x1 - x0:.3f} x {y1 - y0:.3f} mm.")
+            if self.boardName:
+                # Saved numbers are positions on the bed, not on the board: they
+                # fit a new board only if it was placed exactly like the old one.
+                self.out("  Reminder: saved corners are only right if this board sits in the "
+                         "same place on the bed (against the same stops) as the one measured, "
+                         "and the machine was homed first (it just was).")
+            return (x0, y0, x1, y1)
         while True:
             first = self.jogTo("Jog the bit CENTRE over the board's FRONT-LEFT corner (low X, low Y)."
                                "  Arrows move X/Y; raise Z first (Shift+Up) if it is low.")
             second = self.jogTo("Jog the bit CENTRE over the board's BACK-RIGHT corner "
                                 "(high X, high Y).")
             x0, y0, x1, y1 = first.x, first.y, second.x, second.y
-            problems = []
-            if x1 - x0 < MINIMUM_BOARD:
-                problems.append(f"X{x1:.3f} is not to the right of X{x0:.3f}")
-            if y1 - y0 < MINIMUM_BOARD:
-                problems.append(f"Y{y1:.3f} is not behind Y{y0:.3f}")
+            problems = cornerProblems(x0, y0, x1, y1)
             if not problems:
                 self.out(f"  Board: {x1 - x0:.3f} x {y1 - y0:.3f} mm.")
+                offerSaveBoard(self.ask, self.out, self.boardsPath, (x0, y0, x1, y1))
                 return (x0, y0, x1, y1)
             self.out(f"  The second corner must be up and to the right of the first: "
                      f"{'; '.join(problems)}.  Measure both corners again.")
 
     def touchOff(self):
-        position = self.jogTo("Jog the bit DOWN until it just touches the plywood top: Shift+Down, "
-                              "hold Ctrl to creep, tap Shift+Down to step 0.1 mm, Alt+Shift+Down "
-                              "0.01 mm (a sheet of paper under the bit helps).  If it "
+        # With --corners there was no corner jog, so the bit is still where
+        # homing left it, maybe not over the plywood at all: say so first.
+        over = ("First jog the bit over the plywood (arrows move X/Y).  "
+                if getattr(self.options, 'corners', None) is not None else "")
+        position = self.jogTo(over + "Jog the bit DOWN until it just touches the plywood top: "
+                              "Shift+Down, hold Ctrl to creep, tap Shift+Down to step 0.1 mm, "
+                              "Alt+Shift+Down 0.01 mm (a sheet of paper under the bit helps).  If it "
                               "stops with 'At the travel limit', $132 is in the way: Esc, then "
                               "calibrate.py --reset-z-limit.")
         self.grbl.send("G10 L20 P1 Z0")
@@ -1180,9 +1356,32 @@ class Surfacing:
     def run(self, home):
         """home(): runs $H, returns an alarm code or None.  Returns the total depth removed."""
         self.out("=== Surface the spoilboard ===")
+        corners = getattr(self.options, 'corners', None)
+        boardName = getattr(self.options, 'board', None)
+        givenCorners = corners is not None or boardName is not None
         if self.checkEnvironment(out=self.out) != jogModule.ENVIRONMENT_OK:
-            raise PlanRefused("Keyboard jog is unavailable, and the corners and the touch-off need "
-                              "it.  Fix that (see above) and run this again.")
+            # --corners skips only the corner jogs; the touch-off is always a
+            # jog, because only the bit itself can find the plywood top (Z0).
+            needs = "the touch-off needs it" if givenCorners else \
+                "the corners and the touch-off need it"
+            raise PlanRefused(f"Keyboard jog is unavailable, and {needs}.  Fix that (see above) "
+                              "and run this again.")
+        if boardName is not None:
+            # A saved board is just --corners read from a file: from here on
+            # the two take the same path.
+            self.options.corners = corners = chooseBoard(self.boardsPath, boardName)
+            self.boardName = boardName
+            self.options.board = None   # used once; changing step 2 jogs instead
+        if corners is not None:
+            # Before homing, so bad numbers stop the run before anything moves.
+            # The soft limits come from $130-$132, which Grbl reports unhomed.
+            if self.boardName:
+                checkGivenCorners(corners, jogModule.softLimitBounds(self.grbl.getSettings()),
+                                  given=f"the saved board '{self.boardName}'",
+                                  fix=f"Measure it again (run without --board) or correct it in "
+                                      f"{self.boardsPath}.")
+            else:
+                checkGivenCorners(corners, jogModule.softLimitBounds(self.grbl.getSettings()))
         try:
             self.fill('bit')
             self.spindleControl, self.spindleSource = resolveSpindleControl(
@@ -1253,6 +1452,14 @@ def parseArguments(argv=None):
     parser.add_argument("--spindle-control", choices=SPINDLE_MODES,
                         help="grbl: M3/M5 switch the spindle; manual: a router switched by hand "
                              "(default: saved per machine, asked once)")
+    parser.add_argument("--corners", nargs=4, type=float, metavar=("X0", "Y0", "X1", "Y1"),
+                        help="skip the two corner jogs: the bit-centre positions of the board's "
+                             "front-left (lower-left) corner X0 Y0 and back-right (upper-right) "
+                             "corner X1 Y1, in machine coordinates (MPos, as the position display "
+                             "shows after homing).  The touch-off is still a jog")
+    parser.add_argument("--board", metavar="NAME",
+                        help="skip the two corner jogs: use the corners of a board saved in "
+                             "profiles/boards.json (offered after the corners are jogged)")
     parser.add_argument("--one-way", action="store_true",
                         help="cut every line in +X, lifting to clearance for the return")
     arguments = parser.parse_args(argv)
@@ -1265,6 +1472,18 @@ def parseArguments(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be more than 0")
     if arguments.overrun is not None and arguments.overrun < 0:
         parser.error("--overrun must be 0 or more")
+    if arguments.board is not None and arguments.corners is not None:
+        parser.error("give --board or --corners, not both")
+    if arguments.corners is not None:
+        # The order check needs no machine, so it is done here, before
+        # connecting.  The soft-limit check needs Grbl's settings: run() does it.
+        if not all(math.isfinite(value) for value in arguments.corners):
+            parser.error("--corners must be ordinary numbers")
+        problems = cornerProblems(*arguments.corners)
+        if problems:
+            parser.error(f"--corners X0 Y0 X1 Y1: {'; '.join(problems)}.  The back-right "
+                         f"corner (X1 Y1) must be at least {MINIMUM_BOARD:g} mm to the right of "
+                         "and behind the front-left corner (X0 Y0)")
     return arguments
 
 
