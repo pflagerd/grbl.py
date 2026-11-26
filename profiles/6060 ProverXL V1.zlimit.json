@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "spoilboard": {
+    "surfaceZ": -104.7,
+    "intoDepth": 0.0,
+    "zLimit": 104.7,
+    "measuredOn": "2026-11-26",
+    "measuredBy": "surfaced",
+    "bit": "50mm",
+    "touchOffZ": -104.7,
+    "surfacedDepth": 0.0
+  }
+}

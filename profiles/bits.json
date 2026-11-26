@@ -10,7 +10,10 @@
       "diameter": 38.0
     },
     "50mm": {
-      "diameter": 50.0
+      "diameter": 50.0,
+      "feed": 1000.0,
+      "plunge": 50.0,
+      "stepoverPercent": 40.0
     }
   },
   "schemaVersion": 1
