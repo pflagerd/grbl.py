@@ -4,7 +4,7 @@
     python surface-spoiler-board.py [--bit NAME | --diameter MM]
                                     [--corners X0 Y0 X1 Y1 | --board NAME]
                                     [--start {front-left,back-right}] [--one-way]
-                                    [--touch-z MM] ...
+                                    [--touch-z MM] [--stepover MM | --stepover N%] ...
 
 The flow, with nothing moving before an Enter from you:
   1. Pick a saved surfacing bit from profiles/bits.json, or add one.
@@ -33,6 +33,9 @@ The flow, with nothing moving before an Enter from you:
      Or give that cut's bottom as --touch-z with --depth 0: the same plane.
   5. Stepover, depth per pass, feed, plunge, spindle and clearance: a prompt
      for each one not given on the command line, then a summary you can change.
+     The stepover (--stepover, or at its prompt) is in mm (10) or a
+     percentage of the bit diameter (25%); a percentage follows the bit if
+     you change the bit at the summary, mm stay as given.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
      cap (--max-total-depth, default 3 mm).  Then one raster pass, and
      "Another pass ...? [Y / change depth / stop]".  A depth (here, in the
@@ -57,6 +60,7 @@ the G54 X/Y offset and can be checked directly against the soft limits.
 
 The parts, kept separate so they can be tested without a machine:
     defaultFeed(), resolveParameter()   pure: where each default comes from
+    parseStepover()                     pure: "10" (mm) or "25%" (of the bit diameter)
     planPassDepth(), checkZRoom()       pure: depth arithmetic, the $132 check
     cornerProblems(), checkGivenCorners()   pure: are the two corners usable?
     checkGivenTouchZ()                  pure: is the --touch-z height usable?
@@ -166,6 +170,55 @@ def resolveParameter(commandLine, saved, derived):
     if saved is not None:
         return saved, 'saved'
     return derived, 'derived'
+
+
+@dataclass(frozen=True)
+class StepoverPercent:
+    """A stepover given as a share of the bit diameter: --stepover 25%.
+
+    Kept as a percentage, not turned into mm at once, because the diameter
+    may not be known yet when it is given (the bit is picked later, and can
+    be changed at the summary).  mm() converts it once the diameter is known.
+    """
+    percent: float
+
+    def mm(self, diameter):
+        return self.percent * diameter / 100
+
+
+def parseStepover(text):
+    """'10' -> 10.0 (mm); '25%' or '25 %' -> StepoverPercent(25.0).
+
+    Raises ValueError with a message for the operator.  A percentage must be
+    more than 0 and at most 100 (more than the whole diameter leaves a strip
+    uncut between lines); that needs no diameter, so it is checked here.  The
+    mm limit (at most the diameter) needs the bit, so planRaster() checks it.
+    NaN and inf are refused either way: float() accepts "nan" and "inf", and
+    "nan > 0" is False but "inf > 0" is True, so isfinite() is the check.
+    """
+    text = text.strip()
+    isPercent = text.endswith('%')
+    number = text[:-1].strip() if isPercent else text
+    try:
+        value = float(number)
+    except ValueError:
+        raise ValueError(f"'{text}' is not a stepover: give mm (e.g. 10) or a percentage of the "
+                         "bit diameter (e.g. 25%).") from None
+    if not math.isfinite(value):
+        raise ValueError(f"'{text}' is not an ordinary number.")
+    if isPercent:
+        if not 0 < value <= 100:
+            raise ValueError(f"A stepover percentage must be more than 0 and at most 100 "
+                             f"(the whole diameter), not {value:g}%.")
+        return StepoverPercent(value)
+    if value <= 0:
+        raise ValueError(f"The stepover must be more than 0 mm, not {value:g}.")
+    return value
+
+
+def stepoverMm(stepover, diameter):
+    # A parseStepover() result in mm: a percentage needs the diameter.
+    return stepover.mm(diameter) if isinstance(stepover, StepoverPercent) else stepover
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +861,21 @@ def askDepth(ask, prompt, default=None):
         return abs(value)
 
 
+def askStepover(ask, prompt, diameter, default=None):
+    # The stepover in mm, typed as mm ("10") or as a percentage of this bit's
+    # diameter ("25%"); see parseStepover().  Returns mm, since the bit is
+    # known by now.  (A percentage typed here is not remembered as one: a
+    # bit change at the summary asks for the stepover again anyway.)
+    while True:
+        text = ask(prompt).strip()
+        if not text and default is not None:
+            return default
+        try:
+            return stepoverMm(parseStepover(text), diameter)
+        except ValueError as error:
+            print(f"  {error}")
+
+
 def askNewBit(ask, out, bits, path, diameter=None):
     """Ask for a name (and the diameter, unless known), plus flutes; save.  Returns the name."""
     while True:
@@ -1117,6 +1185,9 @@ class Surfacing:
                    'feed': defaultFeed(diameter), 'plunge': PLUNGE_FEED,
                    'spindle': SPINDLE_SPEED, 'clearance': CLEARANCE}[name]
         commandLine = getattr(self.options, name, None)
+        if name == 'stepover' and commandLine is not None:
+            # --stepover 25% becomes mm only now, with this bit's diameter.
+            commandLine = stepoverMm(commandLine, diameter)
         return resolveParameter(commandLine, saved, derived)
 
     def defaultReason(self, name, source):
@@ -1165,6 +1236,13 @@ class Surfacing:
             return f"{value:g} mm/min ({reason})"
         if name == 'spindle':
             return f"S{int(round(value))} ({reason}); control: {self.describeSpindleControl()}"
+        if name == 'stepover':
+            # Both units, whichever was given: "10 mm (20% of the 50 mm
+            # diameter, from --stepover)".  The default's reason already is
+            # that percentage, so it isn't said twice.
+            diameter = self.diameter()
+            share = f"{round(value / diameter * 100, 1):g}% of the {diameter:g} mm diameter"
+            return f"{value:g} mm ({share}" + ("" if reason == share else f", {reason}") + ")"
         if name == 'depth':
             after = round(self.totalDepth + value, 3)
             return (f"{value:g} mm ({reason}); total after this pass {after:.3f} mm "
@@ -1205,11 +1283,14 @@ class Surfacing:
                 # (manual mode: the S word is sent but the router ignores it; don't ask)
                 label = {'depth': "Depth per pass in mm", 'feed': "Feed in mm/min",
                          'plunge': "Plunge feed in mm/min", 'spindle': "Spindle speed (S word)",
-                         'stepover': "Stepover in mm", 'clearance': "Clearance in mm"}[name]
-                # The depth takes a minus sign too (see askDepth()).
-                askNumber = askDepth if name == 'depth' else askPositive
-                typed = askNumber(self.ask, f"{label} [{value:g}, "
-                                            f"{self.defaultReason(name, source)}]: ", default=value)
+                         'stepover': "Stepover in mm, or % of the diameter",
+                         'clearance': "Clearance in mm"}[name]
+                prompt = f"{label} [{value:g}, {self.defaultReason(name, source)}]: "
+                if name == 'stepover':   # mm or a percentage (see askStepover())
+                    typed = askStepover(self.ask, prompt, self.diameter(), default=value)
+                else:   # the depth takes a minus sign too (see askDepth())
+                    askNumber = askDepth if name == 'depth' else askPositive
+                    typed = askNumber(self.ask, prompt, default=value)
                 if typed != value:
                     value, source = typed, 'typed'
             if name == 'spindle':
@@ -1230,7 +1311,14 @@ class Surfacing:
             self.options.touch_z = None   # changing the touch-off means jogging it
         if name == 'bit':
             for dependent in BIT_DEPENDENT:
-                if self.sources.get(dependent) != 'command line':
+                # A --stepover percentage is kept, but its mm follow the new
+                # diameter: forgetting the mm makes fill() work them out
+                # again from the percentage (no question: it is still
+                # 'command line').  A --stepover in mm stays as given.
+                followsBit = (dependent == 'stepover'
+                              and isinstance(getattr(self.options, 'stepover', None),
+                                             StepoverPercent))
+                if self.sources.get(dependent) != 'command line' or followsBit:
                     self.choices.pop(dependent, None)
                     self.sources.pop(dependent, None)
         elif name not in ('pattern', 'start'):
@@ -1763,6 +1851,16 @@ class Surfacing:
 
 # ---------------------------------------------------------------------------
 
+def stepoverArgument(text):
+    # argparse calls this for --stepover.  Its ArgumentTypeError message is
+    # printed as is ("argument --stepover: ..."), so the operator sees why,
+    # before anything connects to the machine.
+    try:
+        return parseStepover(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def parseArguments(argv=None):
     parser = argparse.ArgumentParser(description="Surface the plywood spoilboard with a wide flat bit")
     parser.add_argument("--profile", default=DEFAULT_PROFILE, help="machine profile JSON")
@@ -1770,8 +1868,10 @@ def parseArguments(argv=None):
     parser.add_argument("--baud", type=int, help="default: the profile's rate")
     parser.add_argument("--bit", help="a saved bit from profiles/bits.json")
     parser.add_argument("--diameter", type=float, metavar="MM", help="bit diameter (a bit not saved)")
-    parser.add_argument("--stepover", type=float, metavar="MM",
-                        help=f"default {STEPOVER_PERCENT:g}%% of the diameter")
+    parser.add_argument("--stepover", type=stepoverArgument, metavar="MM",
+                        help="MM, or a percentage of the bit diameter such as 25%%; default "
+                             f"{STEPOVER_PERCENT:g}%%.  A percentage follows the bit if you "
+                             "change it at the summary")
     parser.add_argument("--depth", type=float, metavar="MM",
                         help=f"per pass, default {DEPTH_PER_PASS:g}; a minus sign is fine (-0.2 means "
                              "0.2 deeper); 0 cuts at the touch-off plane (with --touch-z, at that z)")
@@ -1828,7 +1928,8 @@ def parseArguments(argv=None):
                          "-0.2 means 0.2 mm deeper)")
         arguments.depth = abs(arguments.depth)
     # The depth is the only one of these that may be 0 (see just above).
-    for name in ('diameter', 'stepover', 'feed', 'plunge', 'spindle', 'clearance',
+    # (--stepover is checked by stepoverArgument(), as argparse reads it.)
+    for name in ('diameter', 'feed', 'plunge', 'spindle', 'clearance',
                  'max_total_depth'):
         value = getattr(arguments, name)
         if value is not None and not value > 0:

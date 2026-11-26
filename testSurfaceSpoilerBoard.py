@@ -577,7 +577,7 @@ def fakeJog(grbl, positions):
 START = [("Save this 35 mm bit", "n"), ("Press Enter to home", ""),
          ("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("Save these corners", "n"),
          ("just touches", "")]
-PARAMETERS = [("Stepover in mm [14,", ""), ("Depth per pass in mm [0.3,", ""),
+PARAMETERS = [("Stepover in mm, or % of the diameter [14,", ""), ("Depth per pass in mm [0.3,", ""),
               ("Feed in mm/min [286, from 35 mm bit]", ""), ("Plunge feed in mm/min [50,", ""),
               ("Spindle speed (S word) [10000,", ""), ("Clearance in mm [5,", "")]
 FIRST_PASS = [("y to start", "y"), ("Pass 1: -0.3 mm (total -0.3)", "")]
@@ -754,8 +754,8 @@ class SummaryTests(FlowTestBase):
 
     def testRefusedPlanHasNoYes(self):
         grbl, surfacing, operator = self.run_flow(
-            START + [("Stepover in mm [14,", "40")] + PARAMETERS[1:]
-            + [("1-11 to change", "y"), ("1-11 to change", "4"), ("Stepover in mm [14,", ""),
+            START + [("Stepover in mm, or % of the diameter [14,", "40")] + PARAMETERS[1:]
+            + [("1-11 to change", "y"), ("1-11 to change", "4"), ("Stepover in mm, or % of the diameter [14,", ""),
                ("y to start", "q"), ("Press Enter to park", "")])
         self.assertIn("REFUSED", self.text())
         self.assertFalse(operator.prompts[-3].startswith("y to start"))
@@ -2083,13 +2083,140 @@ class HelpTextTests(unittest.TestCase):
         self.assertIn("-X from the back-right", oneWay)
 
 
+class StepoverPercentTests(FlowTestBase):
+    """--stepover (and its prompt) take mm ("10") or a share of the diameter ("25%")."""
+
+    # A 50 mm bit, not saved: its prompts, up to the summary
+    START_50 = [("Save this 50 mm bit", "n"), ("Press Enter to home", ""),
+                ("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("Save these corners", "n"),
+                ("just touches", "")]
+    REST_50 = [("Depth per pass in mm [0.3,", ""), ("Feed in mm/min [200, from 50 mm bit]", ""),
+               ("Plunge feed in mm/min [50,", ""), ("Spindle speed (S word) [10000,", ""),
+               ("Clearance in mm [5,", "")]
+
+    def testParseMillimetresAndPercentages(self):
+        self.assertEqual(ssb.parseStepover("10"), 10.0)
+        self.assertEqual(ssb.parseStepover("25%"), ssb.StepoverPercent(25.0))
+        self.assertEqual(ssb.parseStepover("25 %"), ssb.StepoverPercent(25.0))
+        self.assertEqual(ssb.parseStepover("100%"), ssb.StepoverPercent(100.0))
+        self.assertEqual(ssb.stepoverMm(ssb.parseStepover("25%"), 50.0), 12.5)
+        self.assertEqual(ssb.stepoverMm(ssb.parseStepover("10"), 50.0), 10.0)
+
+    def testParseRefusals(self):
+        for text, pattern in (("0%", "more than 0 and at most 100"),
+                              ("101%", r"at most 100 \(the whole diameter\), not 101%"),
+                              ("-5%", r"at most 100 \(the whole diameter\), not -5%"),
+                              ("%", "not a stepover"), ("abc%", "not a stepover"),
+                              ("abc", "not a stepover"), ("nan%", "not an ordinary number"),
+                              ("inf%", "not an ordinary number"), ("nan", "not an ordinary number"),
+                              ("inf", "not an ordinary number"), ("0", "more than 0 mm"),
+                              ("-3", "more than 0 mm")):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, pattern):
+                ssb.parseStepover(text)
+
+    def testParserRefusesBeforeConnecting(self):
+        # parseArguments() runs before main() opens the port.
+        for text in ("0%", "101%", "-5%", "%", "abc%", "nan%", "nan", "0"):
+            errors = io.StringIO()
+            with self.subTest(text=text), redirect_stderr(errors), \
+                    self.assertRaises(SystemExit):
+                ssb.parseArguments(["--profile", self.profilePath, f"--stepover={text}"])
+            self.assertIn("argument --stepover:", errors.getvalue())
+        errors = io.StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--stepover", "101%"])
+        self.assertIn("at most 100 (the whole diameter), not 101%", errors.getvalue())
+
+    def commandLine(self, stepover, summaryLine):
+        grbl, surfacing, operator = self.run_flow(
+            self.START_50 + self.REST_50 + QUIT,
+            arguments=("--diameter", "50", "--stepover", stepover))
+        self.assertIn(summaryLine, self.output)
+        self.assertFalse(any("Stepover in mm" in prompt for prompt in operator.prompts))
+        return surfacing
+
+    def testPercentOnTheCommandLine(self):
+        for given in ("25%", "25 %"):
+            with self.subTest(given=given):
+                self.output.clear()
+                surfacing = self.commandLine(
+                    given, "  4. Stepover: 12.5 mm (25% of the 50 mm diameter, from --stepover)")
+                self.assertEqual(surfacing.choices['stepover'], 12.5)
+                # planRaster() is asked for 12.5 mm; it may shrink it to space
+                # the lines evenly, never widen it.
+                with mock.patch.object(ssb, 'planRaster', wraps=ssb.planRaster) as planRaster:
+                    plan = surfacing.plan(0.3)
+                self.assertEqual(planRaster.call_args.args[2], 12.5)
+                self.assertLessEqual(plan.stepover, 12.5)
+                self.assertGreater(plan.stepover, 12.0)
+
+    def testMillimetresOnTheCommandLine(self):
+        surfacing = self.commandLine(
+            "10", "  4. Stepover: 10 mm (20% of the 50 mm diameter, from --stepover)")
+        self.assertEqual(surfacing.choices['stepover'], 10.0)
+
+    def testDefaultSummaryLine(self):
+        self.run_flow(START + PARAMETERS + QUIT)
+        self.assertIn("  4. Stepover: 14 mm (40% of the 35 mm diameter)", self.output)
+
+    def testPromptTakesAPercentage(self):
+        prompt = "Stepover in mm, or % of the diameter [20, 40% of the 50 mm diameter]"
+        # abc% and 101% are refused and asked again (the reason goes to stdout).
+        grbl, surfacing, operator = self.run_flow(
+            self.START_50 + [(prompt, "abc%"), (prompt, "101%"), (prompt, "25%")]
+            + self.REST_50 + QUIT, arguments=("--diameter", "50"))
+        self.assertEqual(surfacing.choices['stepover'], 12.5)
+        self.assertIn("  4. Stepover: 12.5 mm (25% of the 50 mm diameter, typed)", self.output)
+
+    def testPromptTakesMillimetres(self):
+        grbl, surfacing, operator = self.run_flow(
+            self.START_50 + [("Stepover in mm, or % of the diameter [20,", "10")]
+            + self.REST_50 + QUIT, arguments=("--diameter", "50"))
+        self.assertEqual(surfacing.choices['stepover'], 10.0)
+        self.assertIn("  4. Stepover: 10 mm (20% of the 50 mm diameter, typed)", self.output)
+
+    def changeTheBit(self, stepover):
+        # --bit 50mm, then at the summary 1 (bit) and pick the 25 mm bit.
+        ssb.saveBits(self.bitsPath, {"25mm": {"diameter": 25.0}, "50mm": {"diameter": 50.0}})
+        script = [("Press Enter to home", ""), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+                  ("Save these corners", "n"), ("just touches", "")] + self.REST_50 + [
+                  ("y to start", "1"), ("Pick a bit (1-2)", "1"),
+                  ("Depth per pass", ""), ("Feed in mm/min [400, from 25 mm bit]", ""),
+                  ("Plunge feed", "")] + QUIT
+        grbl, surfacing, operator = self.run_flow(
+            script, arguments=("--bit", "50mm", "--stepover", stepover))
+        self.assertFalse(any("Stepover in mm" in prompt for prompt in operator.prompts))
+        return surfacing
+
+    def testPercentFollowsABitChange(self):
+        surfacing = self.changeTheBit("25%")
+        self.assertIn("  4. Stepover: 12.5 mm (25% of the 50 mm diameter, from --stepover)",
+                      self.output)
+        self.assertEqual(surfacing.choices['stepover'], 6.25)
+        self.assertEqual(self.output.count(
+            "  4. Stepover: 6.25 mm (25% of the 25 mm diameter, from --stepover)"), 1)
+
+    def testMillimetresStayAcrossABitChange(self):
+        surfacing = self.changeTheBit("10")
+        self.assertEqual(surfacing.choices['stepover'], 10.0)
+        self.assertIn("  4. Stepover: 10 mm (40% of the 25 mm diameter, from --stepover)",
+                      self.output)
+
+    def testHelpShowsBothForms(self):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--help"])
+        self.assertIn("MM, or a percentage of the bit diameter such as 25%; default 40%",
+                      " ".join(printed.getvalue().split()))
+
+
 class SaveSettingsTests(FlowTestBase):
     def testSavedBitDefaultsAndCommandLinePrecedence(self):
         ssb.saveBits(self.bitsPath, {"35mm-flat": {"diameter": 35.0, "feed": 250,
                                                    "stepoverPercent": 30.0}})
         script = [("Press Enter to home", ""), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
                   ("Save these corners", "n"),
-                  ("just touches", ""), ("Stepover in mm [10.5, saved for 35mm-flat]", ""),
+                  ("just touches", ""), ("Stepover in mm, or % of the diameter [10.5, saved for 35mm-flat]", ""),
                   ("Depth per pass in mm [0.3, default]", ""),
                   ("Plunge feed in mm/min [50", ""), ("Spindle speed", ""), ("Clearance", ""),
                   ("y to start", "y"), ("Pass 1", ""), ("Another pass", "s")] + PARK + [
@@ -2107,7 +2234,7 @@ class SaveSettingsTests(FlowTestBase):
         ssb.saveBits(self.bitsPath, {"35mm-flat": {"diameter": 35.0, "feed": 250}})
         script = [("Pick a bit (1-1)", "1"), ("Press Enter to home", ""), ("FRONT-LEFT", ""),
                   ("BACK-RIGHT", ""), ("Save these corners", "n"), ("just touches", ""),
-                  ("Stepover in mm [14,", ""),
+                  ("Stepover in mm, or % of the diameter [14,", ""),
                   ("Depth per pass", ""), ("Feed in mm/min [250, saved for 35mm-flat]", ""),
                   ("Plunge", ""), ("Spindle", ""), ("Clearance", ""),
                   ("y to start", "q"), ("Press Enter to park", "")]
