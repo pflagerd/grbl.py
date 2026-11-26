@@ -472,7 +472,8 @@ def fakeJog(grbl, positions):
 
 # Prompt sequences that recur, for a run with --diameter 35 (not saved)
 START = [("Save this 35 mm bit", "n"), ("Press Enter to home", ""),
-         ("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("just touches", "")]
+         ("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("Save these corners", "n"),
+         ("just touches", "")]
 PARAMETERS = [("Stepover in mm [14,", ""), ("Depth per pass in mm [0.3,", ""),
               ("Feed in mm/min [286, from 35 mm bit]", ""), ("Plunge feed in mm/min [50,", ""),
               ("Spindle speed (S word) [10000,", ""), ("Clearance in mm [5,", "")]
@@ -576,7 +577,8 @@ class FlowTests(FlowTestBase):
 
     def testSecondCornerMustBeUpAndRight(self):
         grbl, surfacing, operator = self.run_flow(
-            START[:4] + [("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("just touches", "")]
+            START[:4] + [("FRONT-LEFT", ""), ("BACK-RIGHT", ""), ("Save these corners", "n"),
+                         ("just touches", "")]
             + PARAMETERS + [("y to start", "q"), ("Press Enter to park", "")],
             positions=[CORNER2, CORNER1, CORNER1, CORNER2, TOUCH])
         self.assertIn("is not to the right of", self.text())
@@ -626,6 +628,7 @@ class SummaryTests(FlowTestBase):
     def testChangeTheBoardJogsAgain(self):
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + [("y to start", "2"), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+                                  ("Save these corners", "n"),
                                   ("y to start", "q"), ("Press Enter to park", "")],
             positions=[CORNER1, CORNER2, TOUCH, (-500.0, -500.0, -60.0), (-300.0, -300.0, -60.0)])
         self.assertEqual(surfacing.choices['board'], (-500.0, -500.0, -300.0, -300.0))
@@ -644,6 +647,250 @@ class SummaryTests(FlowTestBase):
                ("y to start", "q"), ("Press Enter to park", "")])
         self.assertIn("REFUSED", self.text())
         self.assertFalse(operator.prompts[-3].startswith("y to start"))
+
+
+# --corners and --board: the corners given, so no corner jogs
+CORNERS = ("--corners", "-600", "-580", "-200", "-280")     # = BOARD
+GIVEN_START = [("Save this 35 mm bit", "n"), ("Press Enter to home", ""),
+               ("First jog the bit over the plywood (arrows move X/Y).  Jog the bit DOWN", "")]
+QUIT = [("y to start", "q"), ("Press Enter to park", "")]
+CORNER_PROMPTS = ("FRONT-LEFT", "BACK-RIGHT", "Save these corners")
+
+
+class CornersOptionTests(FlowTestBase):
+    def refusedBeforeHoming(self, options, pattern):
+        # Stopped before the bit question and before homing: nothing written to Grbl.
+        grbl = FakeGrbl()
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, pattern) as caught:
+            surfacing.runSafely(grbl.tryHomingCycle)
+        self.assertEqual(grbl.homed, 0)
+        self.assertEqual(grbl.lines, [])
+        self.assertEqual(grbl.sent, [])
+        return str(caught.exception)
+
+    def testCornersSkipTheCornerJogs(self):
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+            arguments=("--diameter", "35", *CORNERS), positions=[TOUCH])
+        self.assertFalse([p for p in operator.prompts if any(c in p for c in CORNER_PROMPTS)])
+        self.assertEqual(surfacing.choices['board'], BOARD)
+        self.assertIn("  Corners from --corners: front-left X-600.000 Y-580.000, back-right "
+                      "X-200.000 Y-280.000; board 400.000 x 300.000 mm.", self.output)
+        self.assertIn("  2. Board: front-left X-600.000 Y-580.000, back-right X-200.000 Y-280.000 "
+                      "(400.000 x 300.000 mm) (from --corners)", self.output)
+        # The plan uses the given corners: the first line starts at x0 - overrun on y0,
+        # the lines run to x1 + overrun, and the last one is on y1.
+        self.assertIn("G53 G0 X-617.500 Y-580.000", grbl.lines)
+        self.assertIn("G53 G1 X-182.500 F286", grbl.lines)
+        self.assertIn("G53 G1 Y-280.000 F286", grbl.lines)
+        self.assertIn("G10 L20 P1 Z0", grbl.sent)          # the touch-off still happened
+        self.assertFalse(os.path.exists(ssb.boardsPath(self.profilePath)))  # no save offer
+
+    def testCornersOutOfOrderRefusedByTheParser(self):
+        stderr = io.StringIO()
+        with mock.patch('sys.stderr', stderr), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--corners", "-200", "-280", "-600", "-580"])
+        self.assertIn("X-600.000 is not to the right of X-200.000", stderr.getvalue())
+        self.assertIn("Y-580.000 is not behind Y-280.000", stderr.getvalue())
+
+    def testCornersOutOfOrderRefusedBeforeHoming(self):
+        # Surfacing used without parseArguments' check (say, from another script).
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        options.corners = (-200.0, -580.0, -600.0, -280.0)
+        message = self.refusedBeforeHoming(options, "out of order")
+        self.assertIn("Please run this again with corrected --corners.", message)
+
+    def testCornersOutsideSoftLimitsRefused(self):
+        # X travel is -619..0 (minus the 0.01 mm margin); -700 is past it.
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35",
+                                      "--corners", "-700", "-580", "-200", "-280"])
+        message = self.refusedBeforeHoming(options, "outside the soft-limit travel")
+        self.assertIn("X must be from -618.990 to -0.010", message)
+
+    def testPlanStillRefusesCornersOutsideSoftLimits(self):
+        with self.assertRaisesRegex(ssb.PlanRefused, "outside the soft-limit travel"):
+            plan(board=(-700.0, -580.0, -200.0, -280.0))
+
+    def testJogUnavailableSaysOnlyTheTouchOffNeedsIt(self):
+        grbl = FakeGrbl()
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35", *CORNERS])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.UNAVAILABLE,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, "Keyboard jog is unavailable, and the "
+                                                     "touch-off needs it"):
+            surfacing.runSafely(grbl.tryHomingCycle)
+
+    def testChangingTheBoardJogsTheCorners(self):
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS
+            + [("y to start", "2"), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+               ("Save these corners", "n")] + QUIT,
+            arguments=("--diameter", "35", *CORNERS),
+            positions=[TOUCH, (-500.0, -500.0, -60.0), (-300.0, -300.0, -60.0)])
+        self.assertEqual(surfacing.choices['board'], (-500.0, -500.0, -300.0, -300.0))
+
+
+class SavedBoardTests(FlowTestBase):
+    # self.profile is named "6060", so boards are saved under that machine.
+    def boards(self, machine="6060"):
+        return ssb.loadBoards(ssb.boardsPath(self.profilePath)).get(machine, {})
+
+    def saveOne(self, name="600x400", corners=BOARD, machine="6060"):
+        x0, y0, x1, y1 = corners
+        path = ssb.boardsPath(self.profilePath)
+        machines = ssb.loadBoards(path)
+        machines.setdefault(machine, {})[name] = {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}
+        ssb.saveBoards(path, machines)
+
+    def refused(self, arguments, pattern):
+        grbl = FakeGrbl()
+        options = ssb.parseArguments(["--profile", self.profilePath, *arguments])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, pattern) as caught:
+            surfacing.runSafely(grbl.tryHomingCycle)
+        self.assertEqual(grbl.homed, 0)
+        self.assertEqual(grbl.lines, [])
+        return str(caught.exception)
+
+    def testBoardsFileNextToProfile(self):
+        self.assertEqual(ssb.boardsPath(self.profilePath),
+                         os.path.join(self.directory, "boards.json"))
+
+    def testSaveJoggedCorners(self):
+        self.run_flow(START[:4] + [("Save these corners as a board for next time? [y/n]", "y"),
+                                   ("Name for this board", "600x400"), ("just touches", "")]
+                      + PARAMETERS + QUIT)
+        self.assertEqual(self.boards(), {"600x400": {'x0': -600.0, 'y0': -580.0,
+                                                     'x1': -200.0, 'y1': -280.0}})
+        self.assertIn("next time use --board 600x400", self.text())
+
+    def testReuseSavedBoard(self):
+        self.saveOne()
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+            arguments=("--diameter", "35", "--board", "600x400"), positions=[TOUCH])
+        self.assertFalse([p for p in operator.prompts if any(c in p for c in CORNER_PROMPTS)])
+        self.assertEqual(surfacing.choices['board'], BOARD)
+        self.assertIn("Corners from --board 600x400", self.text())
+        self.assertIn("same place on the bed (against the same stops)", self.text())
+        self.assertIn("homed", self.text().split("Reminder:", 1)[1])
+        self.assertIn("(from --board 600x400)", self.text())
+        self.assertIn("G53 G0 X-617.500 Y-580.000", grbl.lines)
+
+    def testOverwriteAsksFirst(self):
+        self.saveOne(corners=(-610.0, -590.0, -210.0, -290.0))
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("Name for this board", "600x400"),
+                                   ("There is already a board 600x400: front-left X-610.000", "n"),
+                                   ("Name for this board", "600x400"),
+                                   ("Overwrite it? [y/n]", "y"), ("just touches", "")]
+                      + PARAMETERS + QUIT)
+        self.assertEqual(self.boards()["600x400"], {'x0': -600.0, 'y0': -580.0,
+                                                    'x1': -200.0, 'y1': -280.0})
+
+    def testDecliningOverwriteKeepsTheOldBoard(self):
+        self.saveOne(corners=(-610.0, -590.0, -210.0, -290.0))
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("Name for this board", "600x400"),
+                                   ("Overwrite it?", "n"), ("Name for this board", "second"),
+                                   ("just touches", "")] + PARAMETERS + QUIT)
+        self.assertEqual(self.boards()["600x400"]['x0'], -610.0)
+        self.assertEqual(self.boards()["second"]['x0'], -600.0)
+
+    def testUnknownBoardListsThisMachinesNames(self):
+        self.saveOne("b")
+        self.saveOne("a")
+        self.saveOne("z", machine="4030")      # another machine's: not listed
+        self.refused(["--board", "c"], r"No board called 'c' for 6060 .*\(a, b\)")
+
+    def testSavedBoardOutsideSoftLimitsRefused(self):
+        self.saveOne(corners=(-700.0, -580.0, -200.0, -280.0))
+        self.refused(["--board", "600x400"], "saved board '600x400' are outside the "
+                                             "soft-limit travel.*Measure it again")
+
+    def testBoardMeasuredOnAnotherMachineRefused(self):
+        # Inside this machine's soft limits, but measured on the 4030: refused anyway.
+        self.saveOne(machine="4030 ProverXL V2")
+        message = self.refused(["--board", "600x400"], "measured on 4030 ProverXL V2, not on 6060")
+        self.assertIn("Please measure it on 6060: run this again without --board, jog the "
+                      "corners, and save them.", message)
+
+    def testSameNameOnTwoMachinesKeptApart(self):
+        self.saveOne(machine="4030 ProverXL V2", corners=(-390.0, -290.0, -10.0, -10.0))
+        self.saveOne()
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + QUIT,
+            arguments=("--diameter", "35", "--board", "600x400"), positions=[TOUCH])
+        self.assertEqual(surfacing.choices['board'], BOARD)    # the 6060's, not the 4030's
+
+    def testSavingDoesNotDisturbAnotherMachinesBoards(self):
+        self.saveOne(machine="4030 ProverXL V2", corners=(-390.0, -290.0, -10.0, -10.0))
+        theirs = self.boards("4030 ProverXL V2")
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("Name for this board", "600x400"),
+                                   ("just touches", "")] + PARAMETERS + QUIT)
+        self.assertEqual(self.boards("4030 ProverXL V2"), theirs)   # no overwrite question
+        self.assertEqual(self.boards()["600x400"]['x0'], -600.0)
+        self.assertIn("Saved board '600x400' for 6060", self.text())
+
+    def testMachineKeyIsTheProfileName(self):
+        self.assertEqual(ssb.machineKey(self.profile, self.profilePath), "6060")
+        unnamed = MachineProfile(name="", workAreaZ=109.0)
+        self.assertEqual(ssb.machineKey(unnamed, "/somewhere/4030 ProverXL V2.json"),
+                         "4030 ProverXL V2")
+
+    def oldFlatFile(self):
+        path = ssb.boardsPath(self.profilePath)
+        old = {"schemaVersion": 1,
+               "boards": {"600x400": {'x0': -600, 'y0': -580, 'x1': -200, 'y1': -280}}}
+        ssb.writeJsonAtomically(path, old)
+        with open(path) as jsonFile:
+            return path, jsonFile.read()
+
+    def testOldFlatFileIsWarnedAboutNotUsed(self):
+        path, before = self.oldFlatFile()
+        self.refused(["--board", "600x400"], "No board called '600x400' for 6060")
+        self.assertIn("not in the per-machine format", self.text())
+        with open(path) as jsonFile:
+            self.assertEqual(jsonFile.read(), before)
+
+    def testOldFlatFileIsNotRewrittenBySaving(self):
+        path, before = self.oldFlatFile()
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("just touches", "")]
+                      + PARAMETERS + QUIT)
+        self.assertIn("Warning: could not read", self.text())
+        with open(path) as jsonFile:
+            self.assertEqual(jsonFile.read(), before)
+
+    def testBoardAndCornersTogetherIsAnError(self):
+        stderr = io.StringIO()
+        with mock.patch('sys.stderr', stderr), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--board", "600x400", *CORNERS])
+        self.assertIn("give --board or --corners, not both", stderr.getvalue())
+
+    def testWriteFailureWarnsAndCarriesOn(self):
+        with mock.patch.object(ssb, 'saveBoards', side_effect=OSError("disk full")):
+            grbl, surfacing, operator = self.run_flow(
+                START[:4] + [("Save these corners", "y"), ("Name for this board", "600x400"),
+                             ("just touches", "")] + PARAMETERS + QUIT)
+        self.assertIn("Warning: could not save the board", self.text())
+        self.assertIn("disk full", self.text())
+        self.assertEqual(surfacing.choices['board'], BOARD)
+        self.assertIn("G10 L20 P1 Z0", grbl.sent)          # the run went on to the touch-off
+
+    def testUnreadableBoardsFileWarnsAndCarriesOn(self):
+        with open(ssb.boardsPath(self.profilePath), 'w') as broken:
+            broken.write("{not json")
+        grbl, surfacing, operator = self.run_flow(
+            START[:4] + [("Save these corners", "y"), ("just touches", "")] + PARAMETERS + QUIT)
+        self.assertIn("Warning: could not read", self.text())
+        self.assertEqual(surfacing.choices['board'], BOARD)
 
 
 class ZRoomFlowTests(FlowTestBase):
@@ -1200,6 +1447,7 @@ class SaveSettingsTests(FlowTestBase):
         ssb.saveBits(self.bitsPath, {"35mm-flat": {"diameter": 35.0, "feed": 250,
                                                    "stepoverPercent": 30.0}})
         script = [("Press Enter to home", ""), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+                  ("Save these corners", "n"),
                   ("just touches", ""), ("Stepover in mm [10.5, saved for 35mm-flat]", ""),
                   ("Depth per pass in mm [0.3, default]", ""),
                   ("Plunge feed in mm/min [50", ""), ("Spindle speed", ""), ("Clearance", ""),
@@ -1217,7 +1465,8 @@ class SaveSettingsTests(FlowTestBase):
     def testSavedFeedUsedWithoutCommandLine(self):
         ssb.saveBits(self.bitsPath, {"35mm-flat": {"diameter": 35.0, "feed": 250}})
         script = [("Pick a bit (1-1)", "1"), ("Press Enter to home", ""), ("FRONT-LEFT", ""),
-                  ("BACK-RIGHT", ""), ("just touches", ""), ("Stepover in mm [14,", ""),
+                  ("BACK-RIGHT", ""), ("Save these corners", "n"), ("just touches", ""),
+                  ("Stepover in mm [14,", ""),
                   ("Depth per pass", ""), ("Feed in mm/min [250, saved for 35mm-flat]", ""),
                   ("Plunge", ""), ("Spindle", ""), ("Clearance", ""),
                   ("y to start", "q"), ("Press Enter to park", "")]
@@ -1230,6 +1479,7 @@ class SaveSettingsTests(FlowTestBase):
         grbl = FakeGrbl()
         grbl.interruptAt = "G53 G1 Y"
         script = [("Press Enter to home", ""), ("FRONT-LEFT", ""), ("BACK-RIGHT", ""),
+                  ("Save these corners", "n"),
                   ("just touches", "")] + PARAMETERS + FIRST_PASS
         self.run_flow(script, arguments=("--bit", "35mm-flat"), grbl=grbl,
                       expectException=KeyboardInterrupt)
