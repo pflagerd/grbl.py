@@ -2,7 +2,8 @@
 """Surface (level) the plywood spoilboard with a wide flat bit (issue #13, step 12).
 
     python surface-spoiler-board.py [--bit NAME | --diameter MM]
-                                    [--corners X0 Y0 X1 Y1 | --board NAME] [--one-way] ...
+                                    [--corners X0 Y0 X1 Y1 | --board NAME]
+                                    [--start {front-left,back-right}] [--one-way] ...
 
 The flow, with nothing moving before an Enter from you:
   1. Pick a saved surfacing bit from profiles/bits.json, or add one.
@@ -1612,7 +1613,11 @@ def parseArguments(argv=None):
                              "profiles/boards.json for this machine (the profile's name); "
                              "saving is offered after the corners are jogged")
     parser.add_argument("--one-way", action="store_true",
-                        help="cut every line in +X, lifting to clearance for the return")
+                        # The direction follows --start (see planRaster()), so the
+                        # help names both rather than promising +X.
+                        help="every line cuts in the same direction (+X from the front-left "
+                             "start, -X from the back-right), lifting to clearance for the "
+                             "return; default: zigzag")
     parser.add_argument("--start", choices=STARTS, default=FRONT_LEFT,
                         help="where each pass starts (default front-left: the first lines are "
                              "nearest you, to check the depth).  back-right: usually starts nearer "
