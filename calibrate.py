@@ -41,8 +41,15 @@ import select
 import sys
 import time
 
-import jog as jogModule  # calibrate.py already has a function called jog()
-from GrblController import GrblController, MachineProfile
+# These two need the venv (GrblController needs pyserial).  If the venv isn't
+# active, say so politely instead of dying with a traceback.
+try:
+    import jog as jogModule  # calibrate.py already has a function called jog()
+    from GrblController import GrblController, MachineProfile
+except ModuleNotFoundError as missing:
+    sys.exit(f"Please activate the venv first (this Python has no '{missing.name}' module).\n"
+             f"From the repository root, run:\n"
+             f"    source .venv/bin/activate")
 
 JOG_FEED = 600          # mm/min for direction-test jogs
 PROBE_FEED = 300        # mm/min for the creep probe (slow: we intend to touch a switch)
