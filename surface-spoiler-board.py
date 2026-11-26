@@ -25,7 +25,10 @@ The flow, with nothing moving before an Enter from you:
      for each one not given on the command line, then a summary you can change.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
      cap (--max-total-depth, default 3 mm).  Then one raster pass, and
-     "Another pass ...? [Y / change depth / stop]".
+     "Another pass ...? [Y / change depth / stop]".  A pass cuts lines along X
+     from the front-left corner, front to back (--one-way: every line left to
+     right); with --start back-right, from the back-right corner, back to
+     front (--one-way: right to left).  The cutting (climb) is the same.
   7. Spindle off, lift, park; offers calibrate.py's spoilboard Z limit,
      because the spoilboard top has moved.
 
@@ -96,6 +99,14 @@ MACHINE_SUFFIX = ".machine.json"
 ZIGZAG = "zigzag"
 ONE_WAY = "one-way"
 PATTERNS = (ZIGZAG, ONE_WAY)
+
+# Where each pass starts (--start).  front-left: the first lines are the
+# nearest to the operator, the easiest place to check the depth.  back-right:
+# usually nearer where the bit is after the touch-off (the back-right corner
+# is the last one jogged), and the pass ends nearer the front-left park spot.
+FRONT_LEFT = "front-left"
+BACK_RIGHT = "back-right"
+STARTS = (FRONT_LEFT, BACK_RIGHT)
 
 SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PROFILE = os.path.join(SCRIPT_DIRECTORY, "profiles", "6060 ProverXL V1.json")
@@ -197,12 +208,15 @@ def axisCode(value):
 
 def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth, clearance,
                pattern, bounds, feed, plungeFeed, spindle, rapidRates=None,
-               dwell=SPIN_UP_SECONDS, margin=jogModule.LIMIT_MARGIN):
+               dwell=SPIN_UP_SECONDS, margin=jogModule.LIMIT_MARGIN, start=FRONT_LEFT):
     """One surfacing pass as a list of G-code lines (all G53, machine coordinates).
 
     board: (x0, y0, x1, y1), the bit-centre positions of the front-left and
            back-right corners.
-    Lines run along X, from low Y to high Y.  Each line runs past both X edges
+    Lines run along X.  start=FRONT_LEFT: from low Y to high Y, the first line
+    (and every one-way line) cutting in +X.  start=BACK_RIGHT: the same lines
+    in the opposite order, from high Y to low Y, the first line (and every
+    one-way line) cutting in -X.  Each line runs past both X edges
     by `overrun` (default: the bit radius), clamped to the soft-limit travel.
     The first line is centred on y0 and the last on y1, so the cutter covers
     the Y edges with half its width to spare; the lines between are spaced
@@ -214,6 +228,8 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     x0, y0, x1, y1 = board
     if pattern not in PATTERNS:
         raise PlanRefused(f"Unknown pattern '{pattern}'.")
+    if start not in STARTS:
+        raise PlanRefused(f"Unknown start corner '{start}'.")
     if not diameter > 0:
         raise PlanRefused("The bit diameter must be more than 0.")
     if not 0 < stepover <= diameter:
@@ -251,6 +267,28 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     actualStepover = span / intervals
     lineYs = [round(y0 + i * actualStepover, 3) for i in range(intervals)] + [round(y1, 3)]
 
+    # firstX: where each line starts (zigzag: where the first line starts);
+    # lastX: where it ends.  From the back-right, the pass is the front-left
+    # pass turned half a turn (180 degrees) about the middle of the board:
+    # the same lines, cut back to front and right to left.
+    #
+    # Why that cuts the same way: the router spins clockwise seen from above.
+    # From the front-left, a line runs +X and the next line is behind it (+Y),
+    # so the uncut wood is on the bit's left (its back side), where a
+    # clockwise edge moves +X, the same way as the feed: climb cutting.  From
+    # the back-right, a line runs -X and the next line is in front of it (-Y):
+    # the uncut wood is again on the bit's left (now its front side), where a
+    # clockwise edge moves -X, again the same way as the feed: climb again.
+    # Turning a plan round keeps clockwise clockwise; only a mirror image
+    # (reversing just X, or just Y) would swap climb and conventional.  So
+    # every line, one-way or zigzag, cuts exactly as it does from the
+    # front-left; only the order changes.
+    if start == BACK_RIGHT:
+        lineYs.reverse()
+        firstX, lastX = xEnd, xStart
+    else:
+        firstX, lastX = xStart, xEnd
+
     # The Z floor (-$132) is checkZRoom()'s job, before each pass, because it
     # comes with an offer to reset $132; refusing here would hide that offer.
     cutZ = round(touchZ - totalDepth, 3)
@@ -268,7 +306,7 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     gcode = ["G90 G21 G94"]
     plan = RasterPlan(gcode, lineYs, round(xStart, 3), round(xEnd, 3), actualStepover,
                       cutZ, clearZ, approachZ, notes=notes)
-    position = {'X': xStart, 'Y': y0, 'Z': None}  # the estimate starts over the start point
+    position = {'X': firstX, 'Y': lineYs[0], 'Z': None}  # the estimate starts over the start point
 
     def move(kind, rate=None, **target):
         words = " ".join(f"{axis}{axisCode(value)}" for axis, value in target.items())
@@ -294,20 +332,20 @@ def planRaster(board, diameter, stepover, overrun, touchZ, totalDepth, passDepth
     if dwell:                                  # 0: a hand-switched router, already running
         gcode.append(f"G4 P{dwell:g}")
         plan.seconds += dwell
-    move('G0', X=xStart, Y=lineYs[0])
+    move('G0', X=firstX, Y=lineYs[0])
     plunge()
     for index, y in enumerate(lineYs):
         if pattern == ZIGZAG:
             if index:
                 move('G1', feed, Y=y)          # the step to the next line, at the line end
-            target = xEnd if index % 2 == 0 else xStart
+            target = lastX if index % 2 == 0 else firstX
             move('G1', feed, X=target)
         else:
             if index:
                 move('G0', Z=clearZ)           # lift for the return
-                move('G0', X=xStart, Y=y)
+                move('G0', X=firstX, Y=y)
                 plunge()
-            move('G1', feed, X=xEnd)
+            move('G1', feed, X=lastX)
     move('G0', Z=clearZ)
     gcode.append("M5")                         # off while the operator answers
 
@@ -875,9 +913,10 @@ def rapidRates(settings):
 
 STEP_TITLES = {'bit': "bit", 'board': "board", 'touch': "touch-off", 'stepover': "stepover",
                'depth': "depth this pass", 'feed': "feed", 'plunge': "plunge",
-               'spindle': "spindle", 'clearance': "clearance", 'pattern': "pattern"}
+               'spindle': "spindle", 'clearance': "clearance", 'pattern': "pattern",
+               'start': "start corner"}
 STEP_ORDER = ('bit', 'board', 'touch', 'stepover', 'depth', 'feed', 'plunge', 'spindle',
-              'clearance', 'pattern')
+              'clearance', 'pattern', 'start')
 BIT_DEPENDENT = ('stepover', 'depth', 'feed', 'plunge')  # their defaults come from the bit
 
 SAFETY_REMINDER = (
@@ -992,8 +1031,15 @@ class Surfacing:
         if name == 'touch':
             return f"plywood top at MPos z={value:.3f} (work Z0)"
         if name == 'pattern':
-            return value + (" (every line +X, lift to return)" if value == ONE_WAY
-                            else " (alternate +X / -X)")
+            forward, back = ("-X", "+X") if self.choices.get('start') == BACK_RIGHT else ("+X", "-X")
+            return value + (f" (every line {forward}, lift to return)" if value == ONE_WAY
+                            else f" (alternate {forward} / {back})")
+        if name == 'start':
+            if value == BACK_RIGHT:
+                return (f"{value} (back to front, the first line right to left; ends at the "
+                        "front, nearer the park spot)")
+            return (f"{value} (front to back, the first line left to right; the first lines are "
+                    "nearest you)")
         reason = self.defaultReason(name, source)
         if name == 'feed':
             hint = "" if source == 'command line' else "; override with --feed"
@@ -1025,6 +1071,13 @@ class Surfacing:
             else:
                 self.choices['pattern'] = ONE_WAY if self.options.one_way else ZIGZAG
             self.sources['pattern'] = 'given'
+        elif name == 'start':   # the same as the pattern: asked only when changed
+            if 'start' in self.sources:
+                self.choices['start'] = calibrate.askChoice(
+                    self.ask, f"Start corner ({' / '.join(STARTS)}): ", STARTS)
+            else:
+                self.choices['start'] = self.options.start or FRONT_LEFT
+            self.sources['start'] = 'given'
         else:
             value, source = self.derived(name)
             if source != 'command line' and not (name == 'spindle' and self.manual):
@@ -1055,7 +1108,7 @@ class Surfacing:
                 if self.sources.get(dependent) != 'command line':
                     self.choices.pop(dependent, None)
                     self.sources.pop(dependent, None)
-        elif name != 'pattern':
+        elif name not in ('pattern', 'start'):
             self.sources.pop(name, None)
 
     # --- measurements -------------------------------------------------------
@@ -1132,7 +1185,8 @@ class Surfacing:
                           self.choices['touch'], totalAfter, passDepth, self.choices['clearance'],
                           self.choices['pattern'], jogModule.softLimitBounds(settings),
                           self.choices['feed'], self.choices['plunge'], self.choices['spindle'],
-                          rapidRates(settings), dwell=0 if self.manual else SPIN_UP_SECONDS)
+                          rapidRates(settings), dwell=0 if self.manual else SPIN_UP_SECONDS,
+                          start=self.choices['start'])
 
     def summary(self):
         """The change-your-mind loop.  Returns once the operator answers y."""
@@ -1175,7 +1229,8 @@ class Surfacing:
 
     def describePlan(self, plan):
         self.out(f"  Lines: {len(plan.lineYs)} along X, X{plan.xStart:.3f} to X{plan.xEnd:.3f}, "
-                 f"Y{plan.lineYs[0]:.3f} to Y{plan.lineYs[-1]:.3f} (front to back), "
+                 f"Y{plan.lineYs[0]:.3f} to Y{plan.lineYs[-1]:.3f} "
+                 f"({'back to front' if plan.lineYs[0] > plan.lineYs[-1] else 'front to back'}), "
                  f"stepover {plan.stepover:.3f} mm")
         self.out(f"  Path: {plan.cutLength:.0f} mm cutting + {plan.rapidLength:.0f} mm rapid; "
                  f"about {formatDuration(plan.seconds)} per pass (acceleration not counted)")
@@ -1523,6 +1578,12 @@ def parseArguments(argv=None):
                              "saving is offered after the corners are jogged")
     parser.add_argument("--one-way", action="store_true",
                         help="cut every line in +X, lifting to clearance for the return")
+    parser.add_argument("--start", choices=STARTS, default=FRONT_LEFT,
+                        help="where each pass starts (default front-left: the first lines are "
+                             "nearest you, to check the depth).  back-right: usually starts nearer "
+                             "the touch-off and ends nearer the front-left park spot (shorter "
+                             "rapids); --one-way lines then cut in -X.  The cutting (climb) is the "
+                             "same either way")
     arguments = parser.parse_args(argv)
     if arguments.bit and arguments.diameter is not None:
         parser.error("give --bit or --diameter, not both")
