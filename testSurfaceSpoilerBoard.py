@@ -510,9 +510,9 @@ class FlowTestBase(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             if expectException:
                 with self.assertRaises(expectException):
-                    ssb.runWithSafeStop(surfacing, lambda: homes.append(1) or grbl.tryHomingCycle('3'))
+                    surfacing.runSafely(lambda: homes.append(1) or grbl.tryHomingCycle('3'))
             else:
-                ssb.runWithSafeStop(surfacing, lambda: homes.append(1) or grbl.tryHomingCycle('3'))
+                surfacing.runSafely(lambda: homes.append(1) or grbl.tryHomingCycle('3'))
         self.assertEqual(operator.script, [], "not every scripted answer was used")
         self.homes = homes
         return grbl, surfacing, operator
@@ -559,7 +559,7 @@ class FlowTests(FlowTestBase):
                                   checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
                                   sleep=lambda seconds: None)
         with self.assertRaises(KeyboardInterrupt):
-            ssb.runWithSafeStop(surfacing, grbl.tryHomingCycle)
+            surfacing.runSafely(grbl.tryHomingCycle)
         self.assertEqual(grbl.homed, 0)
         self.assertEqual([line for line in grbl.lines if line.startswith("G53")], [])
 
@@ -571,7 +571,7 @@ class FlowTests(FlowTestBase):
                                   checkEnvironment=lambda out=print: jog.UNAVAILABLE,
                                   sleep=lambda seconds: None)
         with self.assertRaisesRegex(ssb.PlanRefused, "Keyboard jog is unavailable"):
-            ssb.runWithSafeStop(surfacing, grbl.tryHomingCycle)
+            surfacing.runSafely(grbl.tryHomingCycle)
         self.assertEqual(grbl.homed, 0)
 
     def testSecondCornerMustBeUpAndRight(self):
@@ -727,7 +727,7 @@ class PassLoopTests(FlowTestBase):
                                   checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
                                   sleep=lambda seconds: None)
         with redirect_stdout(io.StringIO()):
-            ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+            surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
         return surfacing
 
     def testSpindleOffAtEveryPromptAndRestartedForEveryPass(self):
@@ -977,9 +977,9 @@ class ManualSpindleFlowTests(FlowTestBase):
         with redirect_stdout(io.StringIO()):
             if expectException:
                 with self.assertRaises(expectException):
-                    ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+                    surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
             else:
-                ssb.runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle('3'))
+                surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
         self.assertEqual(operator.script, [], "not every scripted answer was used")
         return grbl, surfacing, seen
 
