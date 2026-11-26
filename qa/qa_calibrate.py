@@ -220,9 +220,9 @@ def makeChecklist(machine):
         startingSettings = (
             "Grbl's current settings, as {'$20': ..., '$21': ..., '$130': ..., '$131': ..., "
             "'$132': ...}. There's no profile yet to compare them with, so please record "
-            "Grbl's $130-$132 in this test's note: answer p followed by the three values as "
-            "shown ($130=... $131=... $132=...). [[C12]] shows them next to the measured "
-            "travel.")
+            "Grbl's $130-$132 in this test's note: press n and you will see a prompt for "
+            "Note:, then enter the three values as shown ($130=... $131=... $132=...), then "
+            "press p to continue. [[C12]] shows them next to the measured travel.")
         profileNote = (f"This is the machine's first calibration: it writes {PROFILE}, a new "
                        "file. Once that's committed to git, git diff profiles/ shows what a "
                        "later run changed.")

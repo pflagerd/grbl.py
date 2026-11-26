@@ -449,6 +449,10 @@ class CalibrateChecklistTests(TempRepo):
         self.assertNotIn("matching the profile", p2)
         self.assertIn("There's no profile yet to compare them with, so please record Grbl's "
                       "$130-$132 in this test's note", p2)
+        # It says how: n for the note, then p.
+        self.assertIn("press n and you will see a prompt for Note:, then enter the three "
+                      "values as shown ($130=... $131=... $132=...), then press p to "
+                      "continue.", p2)
         self.assertIn("the measured X travel (there's no profile yet", stepText(checklist, "C6"))
         self.assertIn("the measured Y travel. Then", stepText(checklist, "C7"))
         self.assertIn("This is the machine's first calibration: it writes "
@@ -510,6 +514,41 @@ class CalibrateChecklistTests(TempRepo):
                       "$132=110.000. Grbl's settings before calibrating (S", shown)
         self.assertIn("): $130=200.000 $131=200.000 $132=200.000.", shown)
         self.assertEqual(session["machine"], machine)
+
+    def testFirstCalibrationNoteWithNThenPShowsInC12(self):
+        """P2 as its text says: n, the three values at Note:, then p."""
+        machine = "4030 ProverXL V2"
+        checklist = self.build(machine)
+        output, answers = [], []
+
+        def ask(prompt=""):
+            output.append(prompt)
+            if prompt.endswith("Note: "):
+                return "$130=200.000 $131=200.000 $132=200.000"
+            if "How did it go?" not in prompt:
+                return "c" if "c to carry on" in prompt else ""
+            answers.append(prompt)
+            if len(answers) == 1:
+                return "n"
+            if len(answers) == 2:
+                # P2 answered; calibrate.py then writes the profile in the other console.
+                self.write(f"{machine}.json",
+                           profile(400, 300, 110, calibratedOn=qa_calibrate.today()))
+                return "p"
+            return "q" if any("Measured travel" in line for line in output) else "p"
+        results = tempfile.mkdtemp(prefix="results-", dir=self.repo)
+        with mock.patch.object(qa_calibrate.evidence, "secondConsoleIn",
+                               lambda directory: (True, "Seen.")):
+            session = qaRunner.Runner(checklist, resultsDir=results, machine=machine,
+                                      commit="abc1234", ask=ask, out=output.append).run()
+        shown = " ".join(" ".join(line.split()) for line in output)
+        self.assertIn("Note kept; now answer p, f or s.", shown)
+        self.assertEqual(session["answers"]["P2"]["result"], qaRunner.PASS)
+        self.assertEqual(session["answers"]["P2"]["note"],
+                         "$130=200.000 $131=200.000 $132=200.000")
+        self.assertIn("Measured travel (the new profile's): $130=400.000, $131=300.000, "
+                      "$132=110.000. Grbl's settings before calibrating (S", shown)
+        self.assertIn("): $130=200.000 $131=200.000 $132=200.000.", shown)
 
 
 if __name__ == "__main__":
