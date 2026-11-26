@@ -715,6 +715,7 @@ class Surfacing:
         self.machinePath = machinePath(profilePath)
         self.spindleControl, self.spindleSource = SPINDLE_GRBL, None
         self.routerOn = False    # manual mode: the operator said the router is on
+        self.homingStarted = False   # run() sets it just before $H
 
     # --- parameters ---------------------------------------------------------
 
@@ -1210,23 +1211,21 @@ class Surfacing:
         self.finish()
         return self.totalDepth
 
-
-def runWithSafeStop(surfacing, home):
-    """Run, and on Ctrl-C or any exception do safeStop() before re-raising."""
-    try:
-        return surfacing.run(home)
-    except BaseException as error:
-        if not getattr(surfacing, 'homingStarted', False):
-            raise   # stopped before anything could move; nothing to stop
-        surfacing.out(f"\n!! {type(error).__name__}: {error}" if str(error)
-                      else f"\n!! {type(error).__name__}")
-        safeStop(surfacing.grbl, surfacing.out, surfacing.sleep, surfacing.clock,
-                 manualSpindle=surfacing.manual)
-        if surfacing.manual and surfacing.routerOn:
-            surfacing.out(ROUTER_STILL_RUNNING)
-        elif surfacing.manual:
-            surfacing.out("!! If you switched the router on, switch it OFF by hand: Grbl can't.")
-        raise
+    def runSafely(self, home):
+        """run(home); on Ctrl-C or any exception once homing has started, safeStop() and re-raise."""
+        try:
+            return self.run(home)
+        except BaseException as error:
+            if not self.homingStarted:
+                raise   # stopped before anything could move; nothing to stop
+            self.out(f"\n!! {type(error).__name__}: {error}" if str(error)
+                     else f"\n!! {type(error).__name__}")
+            safeStop(self.grbl, self.out, self.sleep, self.clock, manualSpindle=self.manual)
+            if self.manual and self.routerOn:
+                self.out(ROUTER_STILL_RUNNING)
+            elif self.manual:
+                self.out("!! If you switched the router on, switch it OFF by hand: Grbl can't.")
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1282,7 @@ def main(argv=None):
         grbl.send('$23=' + profile.homingPosition)
     surfacing = Surfacing(grbl, profile, arguments.profile, arguments)
     try:
-        runWithSafeStop(surfacing, lambda: grbl.tryHomingCycle(profile.homingPosition))
+        surfacing.runSafely(lambda: grbl.tryHomingCycle(profile.homingPosition))
     except KeyboardInterrupt:
         sys.exit(1)
     except (PlanRefused, MachineError) as error:
