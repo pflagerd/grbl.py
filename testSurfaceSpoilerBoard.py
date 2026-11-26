@@ -18,6 +18,7 @@ import importlib.util
 import io
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -310,8 +311,27 @@ class DepthTests(unittest.TestCase):
             ssb.planPassDepth(total, 0.3, 3.0)
         with self.assertRaisesRegex(ssb.DepthRefused, "0.300 mm is left"):
             ssb.planPassDepth(2.7, 0.5, 3.0)
-        with self.assertRaisesRegex(ssb.DepthRefused, "more than 0"):
-            ssb.planPassDepth(0.0, 0.0, 3.0)
+
+    def testZeroPassKeepsTheTotal(self):
+        # A 0 pass cuts the same plane again: the total does not change, and
+        # it is allowed even with the cap already reached.
+        self.assertEqual(ssb.planPassDepth(0.0, 0.0, 3.0), 0.0)
+        self.assertEqual(ssb.planPassDepth(0.6, 0.0, 3.0), 0.6)
+        self.assertEqual(ssb.planPassDepth(3.0, 0.0, 3.0), 3.0)
+        with self.assertRaisesRegex(ssb.DepthRefused, "past the 3 mm cap"):
+            ssb.planPassDepth(3.0, 0.001, 3.0)   # the cap check is still there
+
+    def testNegativeAndNonsenseRefused(self):
+        for depth in (-0.1, float("nan"), float("inf")):
+            with self.assertRaisesRegex(ssb.DepthRefused, "0 or more"):
+                ssb.planPassDepth(0.0, depth, 3.0)
+
+    def testDescribePassDepth(self):
+        # No "-0": a 0 pass says what it does.
+        self.assertEqual(ssb.describePassDepth(0.3, 0.6), "-0.3 mm (total -0.6)")
+        self.assertEqual(ssb.describePassDepth(0.0, 0.0), "0 mm (at the touch-off plane)")
+        self.assertEqual(ssb.describePassDepth(0.0, 0.3),
+                         "0 mm deeper (total -0.3, the same plane again)")
 
     def testZRoom(self):
         self.assertEqual(ssb.checkZRoom(-80.0, 0.3, '109.000'), (True, -80.3, -109.0))
@@ -1823,10 +1843,19 @@ class MinusSignDepthTests(FlowTestBase):
         self.assertEqual(self.askWith(ssb.askDepth, ["0.05"])[0], 0.05)
         self.assertEqual(self.askWith(ssb.askDepth, [""], default=0.3)[0], 0.3)
 
-    def testAskDepthRefusesZeroAndNonsense(self):
-        value, printed = self.askWith(ssb.askDepth, ["0", "-0", "abc", "nan", "-0.05"])
+    def testAskDepthTakesZero(self):
+        # 0 means no deeper (the touch-off plane, or the plane just cut).
+        for typed in ("0", "-0"):
+            value, printed = self.askWith(ssb.askDepth, [typed])
+            self.assertEqual(value, 0)
+            self.assertEqual(math.copysign(1, value), 1, "-0 must come back as 0, not -0.0")
+            self.assertEqual(printed, "")
+
+    def testAskDepthRefusesNonsense(self):
+        value, printed = self.askWith(ssb.askDepth, ["abc", "nan", "inf", "-inf", "-0.05"])
         self.assertEqual(value, 0.05)
-        self.assertEqual(printed.count("It must be more than 0"), 3)   # 0, -0, nan
+        self.assertEqual(printed.count("It must be an ordinary number, 0 or more (a minus sign "
+                                       "is fine"), 3)   # nan, inf, -inf
         self.assertIn("'abc' is not a number.", printed)
 
     def testAskPositiveStillRefusesAMinus(self):
@@ -1838,7 +1867,8 @@ class MinusSignDepthTests(FlowTestBase):
         return self.run_flow(
             START + PARAMETERS + FIRST_PASS
             + [("Another pass at -0.3 mm (total -0.6)", "c"),
-               ("How much deeper for the next pass, in mm (e.g. 0.05): ", typed),
+               ("How much deeper for the next pass, in mm (e.g. 0.05, or 0 for the same plane "
+                "again): ", typed),
                ("Another pass at -0.05 mm (total -0.4)", "s")] + PARK + END)
 
     def testNextPassWithAMinusSign(self):
@@ -1852,14 +1882,40 @@ class MinusSignDepthTests(FlowTestBase):
         self.assertEqual(surfacing.totalDepth, 0.35)
         self.assertIn("  Next pass: 0.05 mm deeper (total -0.35 mm).", self.output)
 
-    def testNextPassRefusesZeroAndNonsense(self):
+    def testNextPassRefusesNonsense(self):
         grbl, surfacing, operator = self.run_flow(
             START + PARAMETERS + FIRST_PASS
             + [("Another pass at -0.3 mm (total -0.6)", "c")]
-            + [("How much deeper for the next pass", typed) for typed in ("0", "-0", "abc", "-0.05")]
+            + [("How much deeper for the next pass", typed) for typed in ("abc", "nan", "inf", "-0.05")]
             + [("Another pass at -0.05 mm (total -0.4)", "s")] + PARK + END)
         self.assertEqual(surfacing.totalDepth, 0.35)
         self.assertEqual(surfacing.passesDone, 2)
+
+    def testNextPassOfZeroRepeatsThePlane(self):
+        # A spring pass: the second pass cuts at the same z as the first.
+        for typed in ("0", "-0"):
+            self.output = []
+            grbl, surfacing, operator = self.run_flow(
+                START + PARAMETERS + FIRST_PASS
+                + [("Another pass at -0.3 mm (total -0.6)", "c"),
+                   ("How much deeper for the next pass", typed),
+                   ("Another pass at 0 mm deeper (total -0.3, the same plane again)?", "s")]
+                + PARK + END)
+            self.assertEqual(surfacing.totalDepth, 0.3)
+            self.assertEqual(surfacing.passesDone, 2)
+            self.assertIn("  Next pass: 0 mm deeper (total -0.3, the same plane again).",
+                          self.output)
+            self.assertIn("  Pass 2: 0 mm deeper (total -0.3, the same plane again), about "
+                          + self.text().split("  Pass 2: 0 mm deeper (total -0.3, the same plane "
+                                              "again), about ", 1)[1].split("\n", 1)[0],
+                          self.output)
+            plunges = [line for line in grbl.lines if line.startswith("G53 G1 Z")]
+            self.assertEqual(set(plunges), {"G53 G1 Z-80.300 F50"})
+            self.assertEqual(len([line for line in grbl.lines if line == "M3 S10000"]), 2)
+            # The 0 spring pass is not the depth offered for saving with the bit.
+            self.assertEqual(surfacing.lastDepth, 0.3)
+            self.assertNotIn("-0 ", self.text())
+            self.assertNotIn("-0)", self.text())
 
     def testSummaryDepthWithAMinusSign(self):
         parameters = [(expected, "-0.05" if expected.startswith("Depth per pass") else reply)
@@ -1891,13 +1947,99 @@ class MinusSignDepthTests(FlowTestBase):
     def testDepthOptionTakesAMinusSign(self):
         options = ssb.parseArguments(["--profile", self.profilePath, "--depth", "-0.2"])
         self.assertEqual(options.depth, 0.2)
+
+    def testDepthOptionTakesZero(self):
         for zero in ("0", "-0"):
-            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                ssb.parseArguments(["--profile", self.profilePath, "--depth", zero])
+            options = ssb.parseArguments(["--profile", self.profilePath, "--depth", zero])
+            self.assertEqual(options.depth, 0)
+            self.assertEqual(math.copysign(1, options.depth), 1)
+
+    def testDepthOptionRefusesNonsense(self):
+        for typed in ("nan", "inf", "-inf"):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                ssb.parseArguments(["--profile", self.profilePath, f"--depth={typed}"])
+            self.assertIn("--depth must be an ordinary number, 0 or more", stderr.getvalue())
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--profile", self.profilePath, "--depth", "abc"])
+
+    def testFeedOptionStillRefusesZero(self):
+        for zero in ("0", "-0"):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                ssb.parseArguments(["--profile", self.profilePath, "--feed", zero])
+            self.assertIn("--feed must be more than 0", stderr.getvalue())
+
+    def testFeedPromptStillRefusesZero(self):
+        parameters = [(expected, "0" if expected.startswith("Feed") else reply)
+                      for expected, reply in PARAMETERS]
+        feedAt = next(i for i, (expected, _) in enumerate(parameters) if expected.startswith("Feed"))
+        parameters.insert(feedAt + 1, ("Feed in mm/min [286", ""))   # asked again; Enter: 286
+        grbl, surfacing, operator = self.run_flow(
+            START + parameters + [("y to start", "q"), ("Press Enter to park", "")])
+        self.assertEqual(surfacing.choices['feed'], 286)
 
     def testFeedOptionStillRefusesAMinus(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             ssb.parseArguments(["--profile", self.profilePath, "--feed", "-300"])
+
+
+NO_DEPTH_PROMPT = [step for step in PARAMETERS if not step[0].startswith("Depth per pass")]
+ZERO_FIRST_PASS = [("y to start", "y"), ("Pass 1: 0 mm (at the touch-off plane)", ""),
+                   ("Another pass at 0 mm (at the touch-off plane)?", "s")]
+SKIM_NOTE = "  Note: a 0 mm pass cuts at the touch-off height, so it only skims the high spots."
+
+
+class ZeroDepthTests(FlowTestBase):
+    """A depth of 0: cut at the touch-off plane, no deeper.
+
+    The owner's use: give the last cut's bottom as --touch-z and re-run with
+    --depth 0 and a finer stepover, a clean-up (spring) pass at that plane.
+    """
+
+    def cutZs(self, grbl):
+        return {line for line in grbl.lines if line.startswith("G53 G1 Z")}
+
+    def testWithTouchZCutsAtThatZ(self):
+        grbl, surfacing, operator = self.run_flow(
+            [("Save this 35 mm bit", "n"), ("Press Enter to home", ""), MOVE_OVER]
+            + NO_DEPTH_PROMPT + ZERO_FIRST_PASS + PARK
+            + [("Save this 35 mm bit and these settings", "n"),
+               ("Set the spoilboard Z limit from the surfaced top? [Y/n]", "n")],
+            arguments=("--diameter", "35", *CORNERS, "--touch-z", "-80.3", "--depth", "0"),
+            positions=[])
+        self.assertEqual(surfacing.totalDepth, 0)
+        self.assertEqual(self.cutZs(grbl), {"G53 G1 Z-80.300 F50"})   # touchZ - 0
+        self.assertTrue(any(line.startswith("  5. Depth this pass: 0 mm (from --depth); total "
+                                            "after this pass 0.000 mm") for line in self.output))
+        self.assertIn("  Cut at z=-80.300, clearance z=-75.300", self.output)
+        self.assertNotIn(SKIM_NOTE, self.output)   # --touch-z: the plane is the one given
+        self.assertIn("The passes cut at the touch-off plane, z=-80.300 for this bit, no deeper.",
+                      self.output)
+        self.assertIn("Total depth removed: 0.000 mm in 1 pass.", self.text())
+        self.assertNotIn("-0 ", self.text())
+        self.assertIsNone(surfacing.lastDepth)   # nothing to save as the depth per pass
+
+    def testFreshTouchOffGetsTheSkimNote(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + NO_DEPTH_PROMPT + ZERO_FIRST_PASS + PARK + END,
+            arguments=("--diameter", "35", "--depth", "-0"))
+        self.assertEqual(self.cutZs(grbl), {f"G53 G1 Z{TOUCH_Z:.3f} F50"})
+        self.assertEqual(self.output.count(SKIM_NOTE), 1)
+
+    def testSummaryPromptTakesZero(self):
+        parameters = [(expected, "0" if expected.startswith("Depth per pass") else reply)
+                      for expected, reply in PARAMETERS]
+        grbl, surfacing, operator = self.run_flow(START + parameters + ZERO_FIRST_PASS + PARK + END)
+        self.assertEqual(surfacing.choices['depth'], 0)
+        self.assertTrue(any(line.startswith("  5. Depth this pass: 0 mm (typed)")
+                            for line in self.output))
+        self.assertEqual(self.cutZs(grbl), {"G53 G1 Z-80.000 F50"})
+        self.assertIn(SKIM_NOTE, self.output)
+
+    def testNoSkimNoteForADeeperPass(self):
+        self.run_flow(START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END)
+        self.assertNotIn(SKIM_NOTE, self.output)
 
 
 class DocstringTests(unittest.TestCase):

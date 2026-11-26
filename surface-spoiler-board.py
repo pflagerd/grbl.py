@@ -30,13 +30,16 @@ The flow, with nothing moving before an Enter from you:
      G10 L2 P1 Z<MM>.  To repeat a surfacing with another stepover, give the
      same --board, --touch-z and --depth: the cut bottoms out at the same
      plane as before (a clean-up pass); a deeper cut needs a bigger --depth.
+     Or give that cut's bottom as --touch-z with --depth 0: the same plane.
   5. Stepover, depth per pass, feed, plunge, spindle and clearance: a prompt
      for each one not given on the command line, then a summary you can change.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
      cap (--max-total-depth, default 3 mm).  Then one raster pass, and
      "Another pass ...? [Y / change depth / stop]".  A depth (here, in the
      summary or as --depth) may be typed with or without a minus sign:
-     -0.05 and 0.05 both mean 0.05 mm deeper.  A pass cuts lines along X
+     -0.05 and 0.05 both mean 0.05 mm deeper.  0 is allowed too: no deeper.
+     A first pass of 0 cuts at the touch-off plane (with --touch-z MM, at
+     that z); a later pass of 0 repeats the plane just cut (a spring pass).  A pass cuts lines along X
      from the front-left corner, front to back (--one-way: every line left to
      right); with --start back-right, from the back-right corner, back to
      front (--one-way: right to left).  The cutting (climb) is the same.
@@ -132,7 +135,7 @@ class PlanRefused(ValueError):
 
 
 class DepthRefused(ValueError):
-    """The pass depth is not allowed (zero, negative, or past the total-depth cap)."""
+    """The pass depth is not allowed (negative, not a number, or past the total-depth cap)."""
 
 
 class MachineError(RuntimeError):
@@ -173,9 +176,16 @@ def planPassDepth(totalSoFar, passDepth, maxTotal):
     """The total depth after one more pass of passDepth, or raise DepthRefused.
 
     Rounded to 0.001 mm so repeated 0.3 mm passes add up to 0.6, 0.9, ... exactly.
+    A passDepth of 0 is allowed: the total stays the same, so the pass cuts
+    the same plane again (at the touch-off plane if nothing is cut yet).
+    Why allow it: with --touch-z set to the bottom of an earlier cut, a 0
+    depth re-cuts exactly that plane with another stepover (a clean-up or
+    spring pass), taking off only what the bit left behind.
     """
-    if not passDepth > 0:
-        raise DepthRefused(f"The depth per pass must be more than 0, not {passDepth:g}.")
+    # "not ... >= 0" also refuses NaN (every comparison with NaN is False);
+    # isfinite() refuses inf, which would otherwise only meet the cap.
+    if not (math.isfinite(passDepth) and passDepth >= 0):
+        raise DepthRefused(f"The depth per pass must be 0 or more, not {passDepth:g}.")
     newTotal = round(totalSoFar + passDepth, 3)
     if newTotal > maxTotal + 1e-9:
         left = round(maxTotal - totalSoFar, 3)
@@ -467,6 +477,21 @@ def overTheBoard(board, diameter):
 def formatDuration(seconds):
     minutes, seconds = divmod(int(round(seconds)), 60)
     return f"{minutes} min {seconds:02d} s"
+
+
+def describePassDepth(passDepth, totalAfter):
+    """A pass's depth as the questions show it: "-0.3 mm (total -0.6)".
+
+    Depths are shown below the touch-off, so with a minus sign; a 0 would
+    come out as "-0", which reads like a typo, so a 0 pass says what it
+    does instead: cut at the touch-off plane (nothing cut yet), or the
+    plane just cut again (a spring pass).
+    """
+    if passDepth > 0:
+        return f"-{passDepth:g} mm (total -{totalAfter:g})"
+    if totalAfter > 0:
+        return f"0 mm deeper (total -{totalAfter:g}, the same plane again)"
+    return "0 mm (at the touch-off plane)"
 
 
 # ---------------------------------------------------------------------------
@@ -761,10 +786,12 @@ def askDepth(ask, prompt, default=None):
     # allowed and dropped, so "-0.05" and "0.05" both mean 0.05 mm deeper.
     # Why: the script itself shows depths as negative ("Pass 1: -0.3 mm",
     # "Another pass at -0.3 mm?"), so typing a minus is natural, and a depth
-    # only ever goes down: there is nothing else "-0.05" could mean.  Zero
-    # (and "-0", which float() reads as -0.0, equal to 0) and NaN are still
-    # refused.  Other values (feed, stepover, ...) keep askPositive(): there a
-    # minus sign is a mistake.
+    # only ever goes down: there is nothing else "-0.05" could mean.  0 (and
+    # "-0", which float() reads as -0.0; abs() makes it 0.0) means no deeper:
+    # cut at the touch-off plane, or again at the plane just cut (see
+    # planPassDepth()).  NaN and inf are refused.  Other values (feed,
+    # stepover, ...) keep askPositive(): there a minus sign is a mistake, and
+    # 0 makes no sense.
     while True:
         text = ask(prompt).strip()
         if not text and default is not None:
@@ -774,8 +801,9 @@ def askDepth(ask, prompt, default=None):
         except ValueError:
             print(f"  '{text}' is not a number.")
             continue
-        if math.isnan(value) or value == 0:
-            print("  It must be more than 0 (a minus sign is fine: -0.05 means 0.05 mm deeper).")
+        if not math.isfinite(value):
+            print("  It must be an ordinary number, 0 or more (a minus sign is fine: -0.05 "
+                  "means 0.05 mm deeper).")
             continue
         return abs(value)
 
@@ -1387,6 +1415,14 @@ class Surfacing:
         self.out(f"  Cut at z={plan.cutZ:.3f}, clearance z={plan.clearZ:.3f}")
         for note in plan.notes:
             self.out(f"  Note: {note}")
+        if (self.choices['depth'] == 0 and self.totalDepth == 0
+                and self.sources.get('touch') != 'command line'):
+            # A fresh touch-off is where the bit met the highest spot under
+            # it, so a cut at that plane takes off only what stands above it.
+            # With --touch-z the plane is whatever z was given (for example
+            # an earlier cut's bottom), so no note.
+            self.out("  Note: a 0 mm pass cuts at the touch-off height, so it only skims the "
+                     "high spots.")
 
     # --- checks before a pass -----------------------------------------------
 
@@ -1431,14 +1467,15 @@ class Surfacing:
                 # Manual mode: the Y also confirms the router is on, because Y
                 # plunges at once and Grbl can't start a hand-switched router.
                 prompt = (("Router ON? " if self.manual else "")
-                          + f"Another pass at -{passDepth:g} mm (total -{after:g})? "
+                          + f"Another pass at {describePassDepth(passDepth, after)}? "
                           "[Y / change depth / stop]: ")
             else:
                 prompt = "Change the depth, or stop? [c / s]: "
             try:
                 answer = self.ask(prompt).strip().lower()
                 if answer.startswith('c'):
-                    return askDepth(self.ask, "How much deeper for the next pass, in mm (e.g. 0.05): ")
+                    return askDepth(self.ask, "How much deeper for the next pass, in mm (e.g. 0.05, "
+                                              "or 0 for the same plane again): ")
             except EOFError:
                 self.out("  (input closed: stopping)")
                 return None
@@ -1521,7 +1558,10 @@ class Surfacing:
             # Say what was understood (a typed "-0.05" became 0.05 deeper)
             # before it cuts.
             after = round(self.totalDepth + answer, 3)
-            self.out(f"  Next pass: {answer:g} mm deeper (total -{after:g} mm).")
+            if answer > 0:
+                self.out(f"  Next pass: {answer:g} mm deeper (total -{after:g} mm).")
+            else:
+                self.out(f"  Next pass: {describePassDepth(answer, after)}.")
             return answer
 
     def cutPasses(self):
@@ -1551,16 +1591,19 @@ class Surfacing:
                 self.out(SAFETY_REMINDER_MANUAL if self.manual else SAFETY_REMINDER)
                 then = ("you switch the router on, then it cuts" if self.manual
                         else "the spindle starts, then it cuts")
-                self.ask(f"Pass 1: -{depth:g} mm (total -{totalAfter:g}), {len(plan.lineYs)} lines, "
+                self.ask(f"Pass 1: {describePassDepth(depth, totalAfter)}, {len(plan.lineYs)} lines, "
                          f"about {formatDuration(plan.seconds)}.  The bit lifts, {then}.  "
                          "Press Enter to start. ")
             else:
-                self.out(f"  Pass {number}: -{depth:g} mm (total -{totalAfter:g}), about "
+                self.out(f"  Pass {number}: {describePassDepth(depth, totalAfter)}, about "
                          f"{formatDuration(plan.seconds)}.")
             self.runPass(plan)
             self.totalDepth = totalAfter
             self.passesDone += 1
-            self.lastDepth = depth
+            if depth > 0:
+                # The depth offered for saving with the bit: a 0 spring pass
+                # is not a depth per pass to start from next time.
+                self.lastDepth = depth
             self.out(f"  Pass {number} done: {self.totalDepth:.3f} mm removed in total.  The bit is "
                      "up at clearance" + (" (the router is still running)." if self.manual
                                           else " and the spindle is stopped."))
@@ -1598,6 +1641,8 @@ class Surfacing:
         used = {'feed': self.choices['feed'], 'depthPerPass': self.lastDepth,
                 'stepoverPercent': round(self.choices['stepover'] / diameter * 100, 1),
                 'plunge': self.choices['plunge']}
+        if self.lastDepth is None:   # every pass was 0: keep the bit's saved depth
+            del used['depthPerPass']
         offerSaveBitSettings(self.ask, self.out, self.bits, self.bitsPath, bitName, diameter, used)
         self.offerSurfacedZLimit(bitName, diameter)
 
@@ -1609,8 +1654,13 @@ class Surfacing:
     def offerSurfacedZLimit(self, bitName, diameter):
         self.stopSpindle()   # park() has already sent M5; this makes sure
         top = self.surfacedTop()
-        self.out(f"The spoilboard top has moved down {self.totalDepth:.3f} mm, to z={top:.3f} for this "
-                 "bit, so a spoilboard Z limit set before is out of date.")
+        if self.totalDepth > 0:
+            self.out(f"The spoilboard top has moved down {self.totalDepth:.3f} mm, to z={top:.3f} for "
+                     "this bit, so a spoilboard Z limit set before is out of date.")
+        else:
+            # Only 0 mm passes: the top is the touch-off plane (with --touch-z,
+            # the plane given, which may be an earlier cut's bottom).
+            self.out(f"The passes cut at the touch-off plane, z={top:.3f} for this bit, no deeper.")
         answer = self.ask("Set the spoilboard Z limit from the surfaced top? [Y/n] ").strip().lower()
         if answer in ('n', 'no'):
             return None
@@ -1722,7 +1772,9 @@ def parseArguments(argv=None):
     parser.add_argument("--diameter", type=float, metavar="MM", help="bit diameter (a bit not saved)")
     parser.add_argument("--stepover", type=float, metavar="MM",
                         help=f"default {STEPOVER_PERCENT:g}%% of the diameter")
-    parser.add_argument("--depth", type=float, metavar="MM", help=f"per pass, default {DEPTH_PER_PASS:g}")
+    parser.add_argument("--depth", type=float, metavar="MM",
+                        help=f"per pass, default {DEPTH_PER_PASS:g}; a minus sign is fine (-0.2 means "
+                             "0.2 deeper); 0 cuts at the touch-off plane (with --touch-z, at that z)")
     parser.add_argument("--feed", type=float, metavar="MM/MIN",
                         help=f"default {REFERENCE_FEED:g} x {REFERENCE_DIAMETER:g} / diameter, "
                              f"clamped to {FEED_MIN:g}-{FEED_MAX:g}")
@@ -1763,15 +1815,20 @@ def parseArguments(argv=None):
                              "Only right if the board has not moved or been changed since.  To "
                              "repeat a surfacing with another --stepover, give the same --board, "
                              "--touch-z and --depth: the cut bottoms out at the same plane as "
-                             "before (a clean-up pass); a deeper cut needs a bigger --depth")
+                             "before (a clean-up pass); a deeper cut needs a bigger --depth.  Or "
+                             "give that cut's bottom as --touch-z with --depth 0")
     arguments = parser.parse_args(argv)
     if arguments.bit and arguments.diameter is not None:
         parser.error("give --bit or --diameter, not both")
     if arguments.depth is not None:
-        # As at the prompts (askDepth()): --depth -0.2 means 0.2 mm deeper.
-        # --depth 0 (or -0) is still refused just below.
+        # As at the prompts (askDepth()): --depth -0.2 means 0.2 mm deeper,
+        # and 0 (or -0) means no deeper: cut at the touch-off plane.
+        if not math.isfinite(arguments.depth):
+            parser.error("--depth must be an ordinary number, 0 or more (a minus sign is fine: "
+                         "-0.2 means 0.2 mm deeper)")
         arguments.depth = abs(arguments.depth)
-    for name in ('diameter', 'stepover', 'depth', 'feed', 'plunge', 'spindle', 'clearance',
+    # The depth is the only one of these that may be 0 (see just above).
+    for name in ('diameter', 'stepover', 'feed', 'plunge', 'spindle', 'clearance',
                  'max_total_depth'):
         value = getattr(arguments, name)
         if value is not None and not value > 0:
