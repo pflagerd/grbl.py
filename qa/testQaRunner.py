@@ -794,7 +794,10 @@ class WhenDoneTests(RunnerTestCase):
                     "check that the venv in that directory has been activated in that "
                     "console. I can't check that from here, so please activate it if you "
                     "haven't already:")
-        self.assertIn(sentence, " ".join(line.strip() for line in text.splitlines()))
+        # Compared with all whitespace removed: the runner wraps long lines, and
+        # with a long repo path it can break mid-path (at a hyphen), where
+        # joining the lines with spaces would put a space inside the path.
+        self.assertIn("".join(sentence.split()), "".join(text.split()))
         self.assertIn("\n\n        source .venv/bin/activate\n\n", text)
         self.assertNotIn("cd ", text)
         self.assertIn("You should see: The prompt starts with (.venv).", text)

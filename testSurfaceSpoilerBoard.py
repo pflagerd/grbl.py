@@ -737,13 +737,29 @@ class CornersOptionTests(FlowTestBase):
 
 
 class SavedBoardTests(FlowTestBase):
-    def boards(self):
-        return ssb.loadBoards(ssb.boardsPath(self.profilePath))
+    # self.profile is named "6060", so boards are saved under that machine.
+    def boards(self, machine="6060"):
+        return ssb.loadBoards(ssb.boardsPath(self.profilePath)).get(machine, {})
 
-    def saveOne(self, name="600x400", corners=BOARD):
+    def saveOne(self, name="600x400", corners=BOARD, machine="6060"):
         x0, y0, x1, y1 = corners
-        ssb.saveBoards(ssb.boardsPath(self.profilePath),
-                       {name: {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}})
+        path = ssb.boardsPath(self.profilePath)
+        machines = ssb.loadBoards(path)
+        machines.setdefault(machine, {})[name] = {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}
+        ssb.saveBoards(path, machines)
+
+    def refused(self, arguments, pattern):
+        grbl = FakeGrbl()
+        options = ssb.parseArguments(["--profile", self.profilePath, *arguments])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, pattern) as caught:
+            surfacing.runSafely(grbl.tryHomingCycle)
+        self.assertEqual(grbl.homed, 0)
+        self.assertEqual(grbl.lines, [])
+        return str(caught.exception)
 
     def testBoardsFileNextToProfile(self):
         self.assertEqual(ssb.boardsPath(self.profilePath),
@@ -788,33 +804,69 @@ class SavedBoardTests(FlowTestBase):
         self.assertEqual(self.boards()["600x400"]['x0'], -610.0)
         self.assertEqual(self.boards()["second"]['x0'], -600.0)
 
-    def testUnknownBoardListsTheSavedNames(self):
-        ssb.saveBoards(ssb.boardsPath(self.profilePath),
-                       {"b": {'x0': -600, 'y0': -580, 'x1': -200, 'y1': -280},
-                        "a": {'x0': -600, 'y0': -580, 'x1': -200, 'y1': -280}})
-        grbl = FakeGrbl()
-        options = ssb.parseArguments(["--profile", self.profilePath, "--board", "c"])
-        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
-                                  out=self.output.append, runJog=fakeJog(grbl, []),
-                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
-                                  sleep=lambda seconds: None)
-        with self.assertRaisesRegex(ssb.PlanRefused, r"No board called 'c' .*\(a, b\)"):
-            surfacing.runSafely(grbl.tryHomingCycle)
-        self.assertEqual(grbl.homed, 0)
-        self.assertEqual(grbl.lines, [])
+    def testUnknownBoardListsThisMachinesNames(self):
+        self.saveOne("b")
+        self.saveOne("a")
+        self.saveOne("z", machine="4030")      # another machine's: not listed
+        self.refused(["--board", "c"], r"No board called 'c' for 6060 .*\(a, b\)")
 
     def testSavedBoardOutsideSoftLimitsRefused(self):
         self.saveOne(corners=(-700.0, -580.0, -200.0, -280.0))
-        grbl = FakeGrbl()
-        options = ssb.parseArguments(["--profile", self.profilePath, "--board", "600x400"])
-        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
-                                  out=self.output.append, runJog=fakeJog(grbl, []),
-                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
-                                  sleep=lambda seconds: None)
-        with self.assertRaisesRegex(ssb.PlanRefused, "saved board '600x400' are outside the "
-                                                     "soft-limit travel.*Measure it again"):
-            surfacing.runSafely(grbl.tryHomingCycle)
-        self.assertEqual(grbl.homed, 0)
+        self.refused(["--board", "600x400"], "saved board '600x400' are outside the "
+                                             "soft-limit travel.*Measure it again")
+
+    def testBoardMeasuredOnAnotherMachineRefused(self):
+        # Inside this machine's soft limits, but measured on the 4030: refused anyway.
+        self.saveOne(machine="4030 ProverXL V2")
+        message = self.refused(["--board", "600x400"], "measured on 4030 ProverXL V2, not on 6060")
+        self.assertIn("Please measure it on 6060: run this again without --board, jog the "
+                      "corners, and save them.", message)
+
+    def testSameNameOnTwoMachinesKeptApart(self):
+        self.saveOne(machine="4030 ProverXL V2", corners=(-390.0, -290.0, -10.0, -10.0))
+        self.saveOne()
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + QUIT,
+            arguments=("--diameter", "35", "--board", "600x400"), positions=[TOUCH])
+        self.assertEqual(surfacing.choices['board'], BOARD)    # the 6060's, not the 4030's
+
+    def testSavingDoesNotDisturbAnotherMachinesBoards(self):
+        self.saveOne(machine="4030 ProverXL V2", corners=(-390.0, -290.0, -10.0, -10.0))
+        theirs = self.boards("4030 ProverXL V2")
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("Name for this board", "600x400"),
+                                   ("just touches", "")] + PARAMETERS + QUIT)
+        self.assertEqual(self.boards("4030 ProverXL V2"), theirs)   # no overwrite question
+        self.assertEqual(self.boards()["600x400"]['x0'], -600.0)
+        self.assertIn("Saved board '600x400' for 6060", self.text())
+
+    def testMachineKeyIsTheProfileName(self):
+        self.assertEqual(ssb.machineKey(self.profile, self.profilePath), "6060")
+        unnamed = MachineProfile(name="", workAreaZ=109.0)
+        self.assertEqual(ssb.machineKey(unnamed, "/somewhere/4030 ProverXL V2.json"),
+                         "4030 ProverXL V2")
+
+    def oldFlatFile(self):
+        path = ssb.boardsPath(self.profilePath)
+        old = {"schemaVersion": 1,
+               "boards": {"600x400": {'x0': -600, 'y0': -580, 'x1': -200, 'y1': -280}}}
+        ssb.writeJsonAtomically(path, old)
+        with open(path) as jsonFile:
+            return path, jsonFile.read()
+
+    def testOldFlatFileIsWarnedAboutNotUsed(self):
+        path, before = self.oldFlatFile()
+        self.refused(["--board", "600x400"], "No board called '600x400' for 6060")
+        self.assertIn("not in the per-machine format", self.text())
+        with open(path) as jsonFile:
+            self.assertEqual(jsonFile.read(), before)
+
+    def testOldFlatFileIsNotRewrittenBySaving(self):
+        path, before = self.oldFlatFile()
+        self.run_flow(START[:4] + [("Save these corners", "y"), ("just touches", "")]
+                      + PARAMETERS + QUIT)
+        self.assertIn("Warning: could not read", self.text())
+        with open(path) as jsonFile:
+            self.assertEqual(jsonFile.read(), before)
 
     def testBoardAndCornersTogetherIsAnError(self):
         stderr = io.StringIO()

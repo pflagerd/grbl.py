@@ -10,11 +10,13 @@ The flow, with nothing moving before an Enter from you:
      homing, every move is by keyboard jog (see "Why the knob" below).  Home.
   3. Jog the bit centre to the board's front-left corner (low X, low Y), Enter;
      then to the back-right corner (high X, high Y), Enter.  Then an offer to
-     save the two corners as a named board in profiles/boards.json.
+     save the two corners as a named board in profiles/boards.json, under
+     this machine (the profile's name).
      --corners X0 Y0 X1 Y1 skips both jogs: it gives those two bit-centre
      positions in machine coordinates (MPos).  --board NAME skips them too,
-     using a saved board's corners; they are only right if the new board sits
-     where the measured one did (against the same stops).  Either way the
+     using a board saved on this machine (one measured on another machine is
+     refused); they are only right if the new board sits where the measured
+     one did (against the same stops).  Either way the
      corners are checked for order and against the soft limits before homing.
   4. Jog the bit down until it just touches the plywood top, Enter (with
      --corners or --board, jog it over the plywood first).  That
@@ -428,28 +430,67 @@ def writeJsonAtomically(path, data):
 # Saved boards: profiles/boards.json
 # ---------------------------------------------------------------------------
 #
-# {"boards": {"600x400": {"x0": -600.0, "y0": -580.0, "x1": -200.0, "y1": -280.0,
-#                         "note": "..."}}, "schemaVersion": 1}
-# Machine coordinates (MPos) of the bit centre, as measured after homing.  The
-# same shape and the same atomic write as bits.json, so a stack of similar
-# spoilboards can be surfaced one after another without measuring each.
-# Shared across machines like bits.json; each board's numbers only make sense
-# on the machine (and against the stops) where they were measured.
+# {"schemaVersion": 2,
+#  "machines": {"6060 ProverXL V1": {"600x400": {"x0": -600.0, "y0": -580.0,
+#                                                "x1": -200.0, "y1": -280.0,
+#                                                "note": "..."}}}}
+# Machine coordinates (MPos) of the bit centre, as measured after homing, so a
+# stack of similar spoilboards can be surfaced one after another without
+# measuring each.  The same atomic write as bits.json.
+#
+# Kept per machine, unlike bits.json: a bit is the same bit in any spindle,
+# but MPos numbers only mean something on the machine that measured them (its
+# travel, its home switches, its stops on the bed).  A board measured on the
+# 6060 could fit inside the 4030's soft limits and still be in the wrong place,
+# so --board only looks under the machine in use, and each machine can have
+# its own "600x400".  (schemaVersion 1, a flat {"boards": {...}} with no
+# machine, was this PR's first draft; such a file is warned about and left
+# alone, never rewritten.)
+
+BOARDS_SCHEMA = 2
+
+
+class BoardsFileError(ValueError):
+    """boards.json is not in the per-machine shape (schemaVersion 2)."""
+
+
+def machineKey(profile, profilePath):
+    """The name boards are saved under for this machine.
+
+    The profile's "name" field ("6060 ProverXL V1"), because it is chosen by
+    a person to name the machine and stays the same if the profile file is
+    copied or renamed.  The file name (without .json) only if the profile has
+    no name.
+    """
+    name = (getattr(profile, 'name', None) or '').strip()
+    return name or os.path.splitext(os.path.basename(profilePath))[0]
+
 
 def boardsPath(profilePath):
     return os.path.join(os.path.dirname(os.path.abspath(profilePath)), BOARDS_FILE)
 
 
 def loadBoards(path):
-    """{name: entry}; an empty dict if the file does not exist yet."""
+    """{machine: {board name: entry}}; an empty dict if the file does not exist yet.
+
+    Raises BoardsFileError for a file in another shape (e.g. the old flat
+    one), OSError or ValueError for one that can't be read or parsed.
+    """
     if not os.path.exists(path):
         return {}
     with open(path) as jsonFile:
-        return json.load(jsonFile).get("boards", {})
+        data = json.load(jsonFile)
+    machines = data.get("machines") if isinstance(data, dict) else None
+    if (data.get("schemaVersion") if isinstance(data, dict) else None) != BOARDS_SCHEMA \
+            or not isinstance(machines, dict) \
+            or not all(isinstance(boards, dict) for boards in machines.values()):
+        raise BoardsFileError(f"{path} is not in the per-machine format (schemaVersion "
+                              f"{BOARDS_SCHEMA}, boards listed under \"machines\")")
+    return machines
 
 
-def saveBoards(path, boards):
-    writeJsonAtomically(path, {"schemaVersion": 1, "boards": boards})
+def saveBoards(path, machines):
+    writeJsonAtomically(path, {"schemaVersion": BOARDS_SCHEMA, "machines": machines})
 
 
 def boardCorners(entry):
@@ -465,16 +506,30 @@ def describeBoard(name, entry):
     return text
 
 
-def chooseBoard(path, name):
-    """The corners of the saved board `name`, or PlanRefused listing the saved names."""
+def chooseBoard(path, machine, name, out=print):
+    """The corners of this machine's saved board `name`, or PlanRefused saying why not."""
     try:
-        boards = loadBoards(path)
+        machines = loadBoards(path)
+    except BoardsFileError as error:
+        # Not ours to fix or rewrite: warn, and carry on as if nothing is saved.
+        out(f"  Warning: {error}; it is treated as having no boards for {machine}.")
+        machines = {}
     except (OSError, ValueError) as error:
         raise PlanRefused(f"Could not read {path}: {error}.") from None
+    boards = machines.get(machine, {})
     if name not in boards:
+        elsewhere = sorted(other for other, theirs in machines.items()
+                           if other != machine and name in theirs)
+        if elsewhere:
+            raise PlanRefused(f"The board '{name}' in {path} was measured on "
+                              f"{' and '.join(elsewhere)}, not on {machine}.  Its corners are "
+                              "machine coordinates, so they are only right on the machine that "
+                              f"measured them.  Please measure it on {machine}: run this again "
+                              "without --board, jog the corners, and save them.")
         known = ", ".join(sorted(boards)) or "none saved yet"
-        raise PlanRefused(f"No board called '{name}' in {path} ({known}).  Please run this again "
-                          "with one of those names, or without --board to jog the corners.")
+        raise PlanRefused(f"No board called '{name}' for {machine} in {path} ({known}).  Please "
+                          "run this again with one of those names, or without --board to jog "
+                          "the corners.")
     try:
         return boardCorners(boards[name])
     except (KeyError, TypeError, ValueError):
@@ -482,20 +537,22 @@ def chooseBoard(path, name):
                           "y1.") from None
 
 
-def offerSaveBoard(ask, out, path, corners):
-    """After jogged corners: offer to save them under a name.  Returns the name, or None.
+def offerSaveBoard(ask, out, path, machine, corners):
+    """After jogged corners: offer to save them under a name, for this machine only.
 
-    Saving is a convenience, so it must never stop the cut: a file that can't
-    be read or written gives a warning, and the run carries on.
+    Returns the name, or None.  Saving is a convenience, so it must never stop
+    the cut: a file that can't be read or written gives a warning, and the run
+    carries on.  Other machines' boards are written back exactly as read.
     """
     if not calibrate.askYesNo(ask, "Save these corners as a board for next time?"):
         return None
     try:
-        boards = loadBoards(path)
-    except (OSError, ValueError) as error:
+        machines = loadBoards(path)
+    except (OSError, ValueError) as error:   # BoardsFileError is a ValueError
         out(f"  Warning: could not read {path} ({error}), so the corners were not saved.  "
             "The cut can go ahead.")
         return None
+    boards = machines.setdefault(machine, {})
     while True:
         name = ask("Name for this board (e.g. 600x400): ").strip()
         if not name:
@@ -507,15 +564,15 @@ def offerSaveBoard(ask, out, path, corners):
             continue   # keep the old one; ask for another name
         break
     x0, y0, x1, y1 = corners
-    entry = {'x0': round(x0, 3), 'y0': round(y0, 3), 'x1': round(x1, 3), 'y1': round(y1, 3)}
-    boards[name] = entry
+    boards[name] = {'x0': round(x0, 3), 'y0': round(y0, 3), 'x1': round(x1, 3),
+                    'y1': round(y1, 3)}
     try:
-        saveBoards(path, boards)
+        saveBoards(path, machines)
     except OSError as error:
         out(f"  Warning: could not save the board in {path} ({error}).  The cut can go ahead; "
             "you will need to measure the corners again next time.")
         return None
-    out(f"  Saved board '{name}' in {path}; next time use --board {name}.")
+    out(f"  Saved board '{name}' for {machine} in {path}; next time use --board {name}.")
     return name
 
 
@@ -859,6 +916,7 @@ class Surfacing:
         self.bitsPath = bitsPath(profilePath)
         self.bits = loadBits(self.bitsPath)
         self.boardsPath = boardsPath(profilePath)
+        self.machineName = machineKey(profile, profilePath)   # boards are saved per machine
         self.boardName = None    # the saved board (--board) whose corners are in use
         self.choices = {}
         self.sources = {}
@@ -1037,7 +1095,8 @@ class Surfacing:
             problems = cornerProblems(x0, y0, x1, y1)
             if not problems:
                 self.out(f"  Board: {x1 - x0:.3f} x {y1 - y0:.3f} mm.")
-                offerSaveBoard(self.ask, self.out, self.boardsPath, (x0, y0, x1, y1))
+                offerSaveBoard(self.ask, self.out, self.boardsPath, self.machineName,
+                               (x0, y0, x1, y1))
                 return (x0, y0, x1, y1)
             self.out(f"  The second corner must be up and to the right of the first: "
                      f"{'; '.join(problems)}.  Measure both corners again.")
@@ -1369,7 +1428,8 @@ class Surfacing:
         if boardName is not None:
             # A saved board is just --corners read from a file: from here on
             # the two take the same path.
-            self.options.corners = corners = chooseBoard(self.boardsPath, boardName)
+            self.options.corners = corners = chooseBoard(self.boardsPath, self.machineName,
+                                                               boardName, self.out)
             self.boardName = boardName
             self.options.board = None   # used once; changing step 2 jogs instead
         if corners is not None:
@@ -1459,7 +1519,8 @@ def parseArguments(argv=None):
                              "shows after homing).  The touch-off is still a jog")
     parser.add_argument("--board", metavar="NAME",
                         help="skip the two corner jogs: use the corners of a board saved in "
-                             "profiles/boards.json (offered after the corners are jogged)")
+                             "profiles/boards.json for this machine (the profile's name); "
+                             "saving is offered after the corners are jogged")
     parser.add_argument("--one-way", action="store_true",
                         help="cut every line in +X, lifting to clearance for the return")
     arguments = parser.parse_args(argv)
