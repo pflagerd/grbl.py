@@ -13,6 +13,7 @@ runKeyboardJog moves the machine to the next of a list of positions.
 Run: python testSurfaceSpoilerBoard.py
 """
 
+import contextlib
 import importlib.util
 import io
 import hashlib
@@ -1692,6 +1693,32 @@ class DocstringTests(unittest.TestCase):
                 self.assertTrue(hasattr(target, piece), f"{name}() is not in surface-spoiler-board.py")
                 target = getattr(target, piece)
             self.assertTrue(callable(target), name)
+
+    def testUsageLineListsEveryOption(self):
+        # The usage line at the top is hand-written, so nothing keeps it in
+        # step with parseArguments(); this catches an option left out of it.
+        usage = ssb.__doc__.split("The flow,", 1)[0]
+        for option in ("--bit", "--diameter", "--corners", "--board", "--start",
+                       "front-left", "back-right", "--one-way"):
+            self.assertIn(option, usage)
+
+
+class HelpTextTests(unittest.TestCase):
+    def helpText(self):
+        # argparse prints --help and exits; catch both and undo its line
+        # wrapping so a phrase can be found wherever the wrap fell.
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--help"])
+        return " ".join(printed.getvalue().split())
+
+    def testOneWayHelpNamesBothDirections(self):
+        # --one-way cuts +X from the front-left start but -X from the
+        # back-right one (--start), so its help must not promise +X only.
+        text = self.helpText()
+        oneWay = text.split("--one-way", 2)[2].split("--start", 1)[0]
+        self.assertIn("+X from the front-left", oneWay)
+        self.assertIn("-X from the back-right", oneWay)
 
 
 class SaveSettingsTests(FlowTestBase):
