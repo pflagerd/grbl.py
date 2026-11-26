@@ -743,8 +743,12 @@ class SummaryTests(FlowTestBase):
 
 # --corners and --board: the corners given, so no corner jogs
 CORNERS = ("--corners", "-600", "-580", "-200", "-280")     # = BOARD
-GIVEN_START = [("Save this 35 mm bit", "n"), ("Press Enter to home", ""),
-               ("First jog the bit over the plywood (arrows move X/Y).  Jog the bit DOWN", "")]
+MOVE_OVER = ("Press Enter to move the bit over the board's front-left corner, one bit radius in",
+             "")
+GIVEN_START = [("Save this 35 mm bit", "n"), ("Press Enter to home", ""), MOVE_OVER,
+               ("The bit is over the board.  Jog the bit DOWN", "")]
+# The bit centre over the front-left corner, one radius (17.5 mm) in, at the Z top (-3)
+OVER_BOARD = ["G53 G0 Z-3.000", "G53 G0 X-582.500 Y-562.500"]
 QUIT = [("y to start", "q"), ("Press Enter to park", "")]
 CORNER_PROMPTS = ("FRONT-LEFT", "BACK-RIGHT", "Save these corners")
 
@@ -826,6 +830,222 @@ class CornersOptionTests(FlowTestBase):
             arguments=("--diameter", "35", *CORNERS),
             positions=[TOUCH, (-500.0, -500.0, -60.0), (-300.0, -300.0, -60.0)])
         self.assertEqual(surfacing.choices['board'], (-500.0, -500.0, -300.0, -300.0))
+
+
+class MoveOverBoardTests(FlowTestBase):
+    """Given corners: an Enter, Z up, then X/Y over the board, before the touch-off."""
+
+    def touchOffJogs(self, grbl):
+        return [i for i, event in enumerate(grbl.events) if event == "G10 L20 P1 Z0"]
+
+    def testGivenCornersMoveOverTheBoardBeforeTheTouchOff(self):
+        grbl = FakeGrbl()
+        positionsAtJog = []
+        runJog = fakeJog(grbl, [TOUCH])
+
+        def recordingJog(grblArgument, homed, out=print):
+            positionsAtJog.append(dict(grbl.position))
+            return runJog(grblArgument, homed, out)
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35", *CORNERS])
+        operator = Operator(GIVEN_START + PARAMETERS + QUIT)
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=operator,
+                                  out=self.output.append, runJog=recordingJog,
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with redirect_stdout(io.StringIO()):
+            surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
+        # Enter first: the move prompt comes before the touch-off prompt, and
+        # names the target, the E-stop button and the order (Z, then X/Y).
+        move = next(i for i, p in enumerate(operator.prompts) if "Press Enter to move" in p)
+        touch = next(i for i, p in enumerate(operator.prompts) if "Jog the bit DOWN" in p)
+        self.assertLess(move, touch)
+        self.assertIn("Keep a hand near the E-stop button.", operator.prompts[move])
+        self.assertIn("X-582.500 Y-562.500: Z up to the top first, then X/Y.",
+                      operator.prompts[move])
+        self.assertNotIn("First jog the bit over the plywood", operator.prompts[touch])
+        # The first two motion lines: Z to the top, then X/Y, both G53; the jog
+        # starts from there, and the touch-off is set after it.
+        motion = [line for line in grbl.lines if line.startswith("G53")]
+        self.assertEqual(motion[:2], OVER_BOARD)
+        self.assertEqual(positionsAtJog, [{'X': -582.5, 'Y': -562.5, 'Z': -3.0}])
+        self.assertLess(grbl.events.index(OVER_BOARD[1]), self.touchOffJogs(grbl)[0])
+
+    def testSavedBoardMovesToo(self):
+        path = ssb.boardsPath(self.profilePath)
+        x0, y0, x1, y1 = BOARD
+        ssb.saveBoards(path, {"6060": {"600x400": {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}}})
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + QUIT,
+            arguments=("--diameter", "35", "--board", "600x400"), positions=[TOUCH])
+        self.assertEqual([line for line in grbl.lines if line.startswith("G53")][:2], OVER_BOARD)
+
+    def testJoggedCornersDoNotMove(self):
+        grbl, surfacing, operator = self.run_flow(START + PARAMETERS + QUIT)
+        self.assertFalse([p for p in operator.prompts if "Press Enter to move" in p])
+        self.assertFalse([line for line in grbl.lines if line.startswith("G53")][:-3],
+                         "only the park moves")
+        touch = next(p for p in operator.prompts if "Jog the bit DOWN" in p)
+        self.assertTrue(touch.startswith("Jog the bit DOWN"))
+
+    def testOverTheBoardInsetAndClamp(self):
+        self.assertEqual(ssb.overTheBoard(BOARD, 35.0), (-582.5, -562.5, False))
+        # 20 mm wide, 300 deep: X goes to the middle, Y one radius in.
+        self.assertEqual(ssb.overTheBoard((-600.0, -580.0, -580.0, -280.0), 35.0),
+                         (-590.0, -562.5, True))
+        # Exactly one bit wide: one radius in is the middle, not a clamp.
+        self.assertEqual(ssb.overTheBoard((-600.0, -580.0, -565.0, -545.0), 35.0),
+                         (-582.5, -562.5, False))
+
+    def testSmallBoardGoesToTheMiddle(self):
+        grbl, surfacing, operator = self.run_flow(
+            [("Save this 35 mm bit", "n"), ("Press Enter to home", ""),
+             ("Press Enter to move the bit over the middle of the board (it is smaller than the "
+              "bit", ""), ("The bit is over the board.", "")] + PARAMETERS + QUIT,
+            arguments=("--diameter", "35", "--corners", "-600", "-580", "-580", "-560"),
+            positions=[(-590.0, -570.0, TOUCH_Z)])
+        motion = [line for line in grbl.lines if line.startswith("G53")]
+        self.assertEqual(motion[:2], ["G53 G0 Z-3.000", "G53 G0 X-590.000 Y-570.000"])
+
+    def testCtrlCDuringTheMoveStopsSafely(self):
+        grbl = FakeGrbl()
+        grbl.interruptAt = "G53 G0 X-582.500"
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START[:3], arguments=("--diameter", "35", *CORNERS), grbl=grbl, positions=[TOUCH],
+            expectException=KeyboardInterrupt)
+        self.assertIn("feed hold (!)", self.text())
+        self.assertEqual(grbl.resets, 1)
+        self.assertNotIn("G10 L20 P1 Z0", grbl.sent)
+
+    def testChangingTheTouchOffMovesOverTheBoardAgain(self):
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START + PARAMETERS + [("y to start", "3")] + GIVEN_START[2:] + QUIT,
+            arguments=("--diameter", "35", *CORNERS), positions=[TOUCH, TOUCH])
+        self.assertEqual(grbl.sent.count("G10 L20 P1 Z0"), 2)
+        self.assertEqual(grbl.lines.count(OVER_BOARD[1]), 2)
+
+
+# --touch-z: the plywood top's machine z given, so no touch-off jog
+TOUCH_Z_ARGUMENTS = ("--diameter", "35", *CORNERS, "--touch-z", "-80")
+
+
+class TouchZOptionTests(FlowTestBase):
+    def refusedBeforeHoming(self, arguments, pattern, grbl=None):
+        grbl = grbl or FakeGrbl()
+        options = ssb.parseArguments(["--profile", self.profilePath, *arguments])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, pattern) as caught:
+            surfacing.runSafely(grbl.tryHomingCycle)
+        self.assertEqual(grbl.homed, 0)
+        self.assertEqual(grbl.lines, [])
+        self.assertEqual(grbl.sent, [])
+        return str(caught.exception)
+
+    def testSkipsTheTouchOffAndSetsG54(self):
+        grbl, surfacing, operator = self.run_flow(
+            [("Save this 35 mm bit", "n"), ("Press Enter to home", ""), MOVE_OVER]
+            + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+            arguments=TOUCH_Z_ARGUMENTS, positions=[])
+        self.assertFalse([p for p in operator.prompts if "Jog the bit DOWN" in p])
+        self.assertNotIn("G10 L20 P1 Z0", grbl.sent)
+        self.assertIn("G10 L2 P1 Z-80.000", grbl.sent)
+        # Still over the board (at the Z top) before G54 is set and the cut starts.
+        self.assertEqual([line for line in grbl.lines if line.startswith("G53")][:2], OVER_BOARD)
+        self.assertLess(grbl.events.index(OVER_BOARD[1]), grbl.events.index("G10 L2 P1 Z-80.000"))
+        self.assertIn("  Work Z0 (G54) set at MPos z=-80.000, from --touch-z (no touch-off).",
+                      self.output)
+        self.assertIn("homed", self.text().split("a --touch-z is only right", 1)[1])
+        self.assertIn("  3. Touch-off: plywood top at MPos z=-80.000 (work Z0) (from --touch-z)",
+                      self.output)
+        # The plan is the same as after a touch-off at z=-80.
+        self.assertIn("G53 G1 Z-80.300 F50", grbl.lines)
+        self.assertEqual(surfacing.choices['touch'], -80.0)
+
+    def testTheSameCutAsATouchOffAtThatHeight(self):
+        touched, _, _ = self.run_flow(
+            GIVEN_START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+            arguments=("--diameter", "35", *CORNERS), positions=[TOUCH])
+        self.output = []
+        given, _, _ = self.run_flow(
+            GIVEN_START[:3] + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+            arguments=TOUCH_Z_ARGUMENTS, positions=[])
+
+        def cut(grbl):
+            return grbl.lines[grbl.lines.index("M3 S10000"):]
+        self.assertEqual(cut(given), cut(touched))
+
+    def testWithJoggedCornersNoMoveAndNoTouchOff(self):
+        grbl, surfacing, operator = self.run_flow(
+            START[:5] + PARAMETERS + QUIT, arguments=("--diameter", "35", "--touch-z", "-80"),
+            positions=[CORNER1, CORNER2])
+        self.assertFalse([p for p in operator.prompts if "Press Enter to move" in p
+                          or "Jog the bit DOWN" in p])
+        self.assertIn("G10 L2 P1 Z-80.000", grbl.sent)
+
+    def testPositiveTouchZRefusedBeforeHoming(self):
+        # The machine z is negative (Grbl's travel is -$13x..0): a positive one
+        # is outside the travel, refused before homing.
+        message = self.refusedBeforeHoming(("--diameter", "35", "--touch-z", "80"),
+                                           "outside the Z soft-limit travel")
+        self.assertIn("from -108.990 to -3.010", message)
+
+    def testBelowTheTravelRefusedBeforeHoming(self):
+        self.refusedBeforeHoming(("--diameter", "35", *CORNERS, "--touch-z", "-120"),
+                                 "outside the Z soft-limit travel")
+
+    def testNoClearanceRefusedBeforeHoming(self):
+        message = self.refusedBeforeHoming(("--diameter", "35", "--touch-z", "-3.5"),
+                                           "less than 1 mm of clearance")
+        self.assertIn("--touch-z", message)
+
+    def testNotANumberRefusedByTheParser(self):
+        stderr = io.StringIO()
+        with mock.patch('sys.stderr', stderr), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--touch-z", "nan"])
+        self.assertIn("--touch-z must be an ordinary number", stderr.getvalue())
+
+    def testZRoomOfferStillWorks(self):
+        # $132=80.2 fences z=-80.2; the pass from -80 needs -80.3: the reset is offered.
+        settings = dict(SETTINGS)
+        settings['$132'] = '80.200'
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START[:3] + PARAMETERS
+            + [("y to start", "y"), ("Reset $132 to the full Z travel, 109.000", "y"),
+               ("Pass 1", ""), ("Another pass", "s")] + PARK + END,
+            arguments=TOUCH_Z_ARGUMENTS, grbl=FakeGrbl(settings), positions=[])
+        self.assertIn("Z room: NOT enough", self.text())
+        self.assertIn("$132=109.000", grbl.sent)
+        self.assertEqual(surfacing.passesDone, 1)
+
+    def testChangingTheTouchOffJogsIt(self):
+        grbl, surfacing, operator = self.run_flow(
+            GIVEN_START[:3] + PARAMETERS + [("y to start", "3")] + GIVEN_START[2:] + QUIT,
+            arguments=TOUCH_Z_ARGUMENTS, positions=[(-400.0, -400.0, -81.0)])
+        self.assertIsNone(surfacing.options.touch_z)
+        self.assertEqual(surfacing.choices['touch'], -81.0)
+        self.assertIn("G10 L20 P1 Z0", grbl.sent)
+        self.assertIn("  3. Touch-off: plywood top at MPos z=-81.000 (work Z0)", self.output)
+        self.assertNotIn("  3. Touch-off: plywood top at MPos z=-81.000 (work Z0) (from --touch-z)",
+                         self.output)
+
+    def testJogUnavailableWording(self):
+        grbl = FakeGrbl()
+        options = ssb.parseArguments(["--profile", self.profilePath, *TOUCH_Z_ARGUMENTS])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=Operator([]),
+                                  out=self.output.append, runJog=fakeJog(grbl, []),
+                                  checkEnvironment=lambda out=print: jog.UNAVAILABLE,
+                                  sleep=lambda seconds: None)
+        with self.assertRaisesRegex(ssb.PlanRefused, "changing the board or the touch-off"):
+            surfacing.runSafely(grbl.tryHomingCycle)
+
+    def testHelpMentionsTheCleanUpPass(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            ssb.parseArguments(["--help"])
+        self.assertIn("clean-up pass", " ".join(stdout.getvalue().split()))
+        self.assertIn("clean-up pass", " ".join(ssb.__doc__.split()))
 
 
 class SavedBoardTests(FlowTestBase):
@@ -1699,7 +1919,7 @@ class DocstringTests(unittest.TestCase):
         # step with parseArguments(); this catches an option left out of it.
         usage = ssb.__doc__.split("The flow,", 1)[0]
         for option in ("--bit", "--diameter", "--corners", "--board", "--start",
-                       "front-left", "back-right", "--one-way"):
+                       "front-left", "back-right", "--one-way", "--touch-z"):
             self.assertIn(option, usage)
 
 

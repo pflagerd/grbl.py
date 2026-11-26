@@ -3,7 +3,8 @@
 
     python surface-spoiler-board.py [--bit NAME | --diameter MM]
                                     [--corners X0 Y0 X1 Y1 | --board NAME]
-                                    [--start {front-left,back-right}] [--one-way] ...
+                                    [--start {front-left,back-right}] [--one-way]
+                                    [--touch-z MM] ...
 
 The flow, with nothing moving before an Enter from you:
   1. Pick a saved surfacing bit from profiles/bits.json, or add one.
@@ -19,9 +20,16 @@ The flow, with nothing moving before an Enter from you:
      refused); they are only right if the new board sits where the measured
      one did (against the same stops).  Either way the
      corners are checked for order and against the soft limits before homing.
-  4. Jog the bit down until it just touches the plywood top, Enter (with
-     --corners or --board, jog it over the plywood first).  That
-     becomes work Z0 (G54, G10 L20 P1 Z0); its machine z is recorded.
+  4. With --corners or --board, an Enter first moves the bit over the
+     board (Z up to the top, then X/Y to the front-left corner, one bit
+     radius in); with jogged corners it is already there.  Then jog the bit
+     down until it just touches the plywood top, Enter.  That becomes work
+     Z0 (G54, G10 L20 P1 Z0); its machine z is recorded.
+     --touch-z MM skips this jog: it gives that machine z (MPos, as the
+     touch-off and the summary print it), and work Z0 is set there with
+     G10 L2 P1 Z<MM>.  To repeat a surfacing with another stepover, give the
+     same --board, --touch-z and --depth: the cut bottoms out at the same
+     plane as before (a clean-up pass); a deeper cut needs a bigger --depth.
   5. Stepover, depth per pass, feed, plunge, spindle and clearance: a prompt
      for each one not given on the command line, then a summary you can change.
   6. Before each pass: the Z soft-limit room check ($132) and the total-depth
@@ -48,6 +56,8 @@ The parts, kept separate so they can be tested without a machine:
     defaultFeed(), resolveParameter()   pure: where each default comes from
     planPassDepth(), checkZRoom()       pure: depth arithmetic, the $132 check
     cornerProblems(), checkGivenCorners()   pure: are the two corners usable?
+    checkGivenTouchZ()                  pure: is the --touch-z height usable?
+    overTheBoard()                      pure: where the bit goes before a touch-off
     planRaster()                        pure: board + bit + bounds -> G-code
     loadBits(), saveBits(), chooseBit() the bit list (profiles/bits.json)
     loadBoards(), saveBoards(), chooseBoard()   saved corners (profiles/boards.json)
@@ -401,6 +411,57 @@ def checkGivenCorners(corners, bounds, margin=jogModule.LIMIT_MARGIN, given="--c
                           f"from {xLow:.3f} to {xHigh:.3f} and Y from {yLow:.3f} to {yHigh:.3f} "
                           "(machine coordinates, MPos, as the position display shows after "
                           f"homing).  {fix}")
+
+
+def checkGivenTouchZ(touchZ, bounds, margin=jogModule.LIMIT_MARGIN):
+    """Raise PlanRefused if --touch-z can't be used; nothing is sent either way.
+
+    Called before homing, like checkGivenCorners(): a jogged touch-off is
+    inside the Z travel by construction, a typed number can be anything.
+    Two things are checked here, the rest later as usual:
+      - it is inside the Z soft-limit travel (from -$132 to -$27), because
+        a touch-off jog could not have found the plywood anywhere else;
+      - there is room for at least MINIMUM_CLEARANCE above it, because
+        planRaster() refuses a plan without that.
+    The room for the cut BELOW it is left to the check before each pass
+    (checkZRoom(), via ensureZRoom()): that one comes with the offer to reset
+    $132, and refusing here would hide that offer.
+    """
+    zLow, zHigh = bounds['Z'][0] + margin, bounds['Z'][1] - margin
+    fix = "Please run this again with a corrected --touch-z, or without it to touch off."
+    if not math.isfinite(touchZ):
+        raise PlanRefused(f"--touch-z must be an ordinary number.  {fix}")
+    if not zLow - 1e-9 <= touchZ <= zHigh + 1e-9:
+        raise PlanRefused(f"--touch-z {touchZ:.3f} is outside the Z soft-limit travel: it must be "
+                          f"from {zLow:.3f} to {zHigh:.3f} (machine coordinates, MPos, as the "
+                          "touch-off prints it: \"MPos z=...\").  If $132 is a spoilboard limit "
+                          f"set too high, calibrate.py --reset-z-limit resets it.  {fix}")
+    if touchZ + MINIMUM_CLEARANCE > zHigh + 1e-9:
+        raise PlanRefused(f"--touch-z {touchZ:.3f} leaves less than {MINIMUM_CLEARANCE:g} mm of "
+                          f"clearance under the top of the Z travel (z={zHigh:.3f}).  {fix}")
+
+
+def overTheBoard(board, diameter):
+    """(x, y, clamped): where the bit centre goes before a touch-off with given corners.
+
+    The corners are bit-CENTRE positions, so with the centre exactly on the
+    front-left corner, three quarters of the bit hang off the board, and the
+    touch-off could find the bed (or nothing) instead of the plywood.  Moved
+    one bit radius in, in X and in Y, the whole bit is over the board.  A
+    board narrower (or shallower) than the bit has no such spot: the bit goes
+    to the middle in that direction instead (clamped=True), as far over the
+    board as it can be.  Always between the corners, so inside the soft
+    limits whenever they are (checkGivenCorners()).
+    """
+    x0, y0, x1, y1 = board
+    radius = diameter / 2
+    x, y = x0 + radius, y0 + radius
+    clamped = False
+    if x > (x0 + x1) / 2:
+        x, clamped = (x0 + x1) / 2, True
+    if y > (y0 + y1) / 2:
+        y, clamped = (y0 + y1) / 2, True
+    return round(x, 3), round(y, 3), clamped
 
 
 def formatDuration(seconds):
@@ -1056,7 +1117,8 @@ class Surfacing:
                     + ((f" (from --board {self.boardName})" if self.boardName
                         else " (from --corners)") if source == 'command line' else ""))
         if name == 'touch':
-            return f"plywood top at MPos z={value:.3f} (work Z0)"
+            return (f"plywood top at MPos z={value:.3f} (work Z0)"
+                    + (" (from --touch-z)" if source == 'command line' else ""))
         if name == 'pattern':
             forward, back = ("-X", "+X") if self.choices.get('start') == BACK_RIGHT else ("+X", "-X")
             return value + (f" (every line {forward}, lift to return)" if value == ONE_WAY
@@ -1090,7 +1152,11 @@ class Surfacing:
         elif name == 'board':
             self.choices['board'] = self.measureBoard()
         elif name == 'touch':
-            self.choices['touch'] = self.touchOff()
+            if getattr(self.options, 'touch_z', None) is not None:
+                self.choices['touch'] = self.givenTouchZ()
+                self.sources['touch'] = 'command line'
+            else:
+                self.choices['touch'] = self.touchOff()
         elif name == 'pattern':
             if 'pattern' in self.sources:  # asked to change it
                 self.choices['pattern'] = calibrate.askChoice(
@@ -1132,6 +1198,8 @@ class Surfacing:
         if name == 'board' and getattr(self.options, 'corners', None) is not None:
             self.options.corners = None   # changing the board means jogging the corners
             self.boardName = None
+        if name == 'touch':
+            self.options.touch_z = None   # changing the touch-off means jogging it
         if name == 'bit':
             for dependent in BIT_DEPENDENT:
                 if self.sources.get(dependent) != 'command line':
@@ -1183,11 +1251,64 @@ class Surfacing:
             self.out(f"  The second corner must be up and to the right of the first: "
                      f"{'; '.join(problems)}.  Measure both corners again.")
 
+    def moveOverBoard(self):
+        """Given corners: Enter, then Z up to the top, then X/Y over the board.
+
+        With --corners or --board there was no corner jog, so the bit is still
+        where homing left it, maybe not over the plywood at all.  Z goes up
+        first, on its own line, so the X/Y move can't drag the bit through a
+        clamp, a stop or the board's edge; Grbl runs the lines in order, so
+        X/Y starts only once Z is up.  The top is the soft-limit top, as in
+        park().  Both targets are inside the soft limits (see overTheBoard()),
+        and a Ctrl-C (or an error) here reaches runSafely(), which stops the
+        motion with safeStop() as for any other move.
+        """
+        x, y, clamped = overTheBoard(self.choices['board'], self.diameter())
+        top = round(jogModule.softLimitBounds(self.grbl.getSettings())['Z'][1], 3)
+        where = ("over the middle of the board (it is smaller than the bit, so there is no spot "
+                 "one bit radius in from the corner)" if clamped
+                 else "over the board's front-left corner, one bit radius in (so the whole bit is "
+                      "over the plywood)")
+        self.ask(f"Keep a hand near the E-stop button.  Press Enter to move the bit {where}, "
+                 f"X{x:.3f} Y{y:.3f}: Z up to the top first, then X/Y. ")
+        streamGcode(self.grbl, [f"G53 G0 Z{top:.3f}", f"G53 G0 X{x:.3f} Y{y:.3f}"], 300,
+                    self.out, self.clock)
+        waitForIdle(self.grbl, 300, self.sleep, self.clock)
+
+    def givenTouchZ(self):
+        """--touch-z: work Z0 at that machine z, without a touch-off jog.
+
+        G10 L20 P1 Z0 (the touch-off) means "make the position where the bit
+        is NOW work Z0"; here the bit is not at the plywood, so that would be
+        wrong.  G10 L2 P1 Z<z> sets the G54 Z offset itself: work Z = machine
+        Z - offset, so work Z0 is at machine z, wherever the bit is.  The cut
+        doesn't depend on it (planRaster() works in G53 machine coordinates,
+        from this same z); it keeps the position display the same as after a
+        touch-off.  With given corners the bit still goes over the board
+        first, at the top of Z: the first pass comes down to clearance
+        wherever the bit is, and after homing that may be over a clamp or a
+        stop; over the board, the clearance is above the plywood.
+        """
+        touchZ = round(float(self.options.touch_z), 3)
+        if getattr(self.options, 'corners', None) is not None:
+            self.moveOverBoard()
+        self.grbl.send(f"G10 L2 P1 Z{touchZ:.3f}")
+        self.out(f"  Work Z0 (G54) set at MPos z={touchZ:.3f}, from --touch-z (no touch-off).")
+        self.out("  Reminder: a --touch-z is only right if the machine was homed first (it just "
+                 "was) and the board has not been moved or changed since that z was measured.  "
+                 "Surfacing since is fine: the same --touch-z and --depth cut down to the same "
+                 "plane as before (a clean-up pass); a bigger --depth goes deeper.")
+        return touchZ
+
     def touchOff(self):
-        # With --corners there was no corner jog, so the bit is still where
-        # homing left it, maybe not over the plywood at all: say so first.
-        over = ("First jog the bit over the plywood (arrows move X/Y).  "
-                if getattr(self.options, 'corners', None) is not None else "")
+        # With --corners or --board there was no corner jog: move the bit
+        # over the board first (moveOverBoard()).  With jogged corners, the
+        # bit is already over the board (at the back-right corner).
+        if getattr(self.options, 'corners', None) is not None:
+            self.moveOverBoard()
+            over = "The bit is over the board.  "
+        else:
+            over = ""
         position = self.jogTo(over + "Jog the bit DOWN until it just touches the plywood top: "
                               "Shift+Down, hold Ctrl to creep, tap Shift+Down to step 0.1 mm, "
                               "Alt+Shift+Down 0.01 mm (a sheet of paper under the bit helps).  If it "
@@ -1509,11 +1630,19 @@ class Surfacing:
         corners = getattr(self.options, 'corners', None)
         boardName = getattr(self.options, 'board', None)
         givenCorners = corners is not None or boardName is not None
+        touchZ = getattr(self.options, 'touch_z', None)
         if self.checkEnvironment(out=self.out) != jogModule.ENVIRONMENT_OK:
-            # --corners skips only the corner jogs; the touch-off is always a
-            # jog, because only the bit itself can find the plywood top (Z0).
-            needs = "the touch-off needs it" if givenCorners else \
-                "the corners and the touch-off need it"
+            # --corners skips only the corner jogs; the touch-off is a jog
+            # unless --touch-z gives its result.  With both, nothing is jogged
+            # unless a step is changed at the summary, which jogs it again.
+            if givenCorners and touchZ is not None:
+                needs = "changing the board or the touch-off at the summary needs it"
+            elif givenCorners:
+                needs = "the touch-off needs it"
+            elif touchZ is not None:
+                needs = "the corners need it"
+            else:
+                needs = "the corners and the touch-off need it"
             raise PlanRefused(f"Keyboard jog is unavailable, and {needs}.  Fix that (see above) "
                               "and run this again.")
         if boardName is not None:
@@ -1533,6 +1662,9 @@ class Surfacing:
                                       f"{self.boardsPath}.")
             else:
                 checkGivenCorners(corners, jogModule.softLimitBounds(self.grbl.getSettings()))
+        if touchZ is not None:
+            # The same: before homing, so a bad number stops the run first.
+            checkGivenTouchZ(touchZ, jogModule.softLimitBounds(self.grbl.getSettings()))
         try:
             self.fill('bit')
             self.spindleControl, self.spindleSource = resolveSpindleControl(
@@ -1607,7 +1739,8 @@ def parseArguments(argv=None):
                         help="skip the two corner jogs: the bit-centre positions of the board's "
                              "front-left (lower-left) corner X0 Y0 and back-right (upper-right) "
                              "corner X1 Y1, in machine coordinates (MPos, as the position display "
-                             "shows after homing).  The touch-off is still a jog")
+                             "shows after homing).  The touch-off is still a jog (see "
+                             "--touch-z); an Enter first moves the bit over the board")
     parser.add_argument("--board", metavar="NAME",
                         help="skip the two corner jogs: use the corners of a board saved in "
                              "profiles/boards.json for this machine (the profile's name); "
@@ -1624,6 +1757,13 @@ def parseArguments(argv=None):
                              "the touch-off and ends nearer the front-left park spot (shorter "
                              "rapids); --one-way lines then cut in -X.  The cutting (climb) is the "
                              "same either way")
+    parser.add_argument("--touch-z", type=float, metavar="MM",
+                        help="skip the touch-off jog: the machine Z (MPos) of the plywood top, as "
+                             "a touch-off prints it (\"MPos z=...\") and the summary shows it.  "
+                             "Only right if the board has not moved or been changed since.  To "
+                             "repeat a surfacing with another --stepover, give the same --board, "
+                             "--touch-z and --depth: the cut bottoms out at the same plane as "
+                             "before (a clean-up pass); a deeper cut needs a bigger --depth")
     arguments = parser.parse_args(argv)
     if arguments.bit and arguments.diameter is not None:
         parser.error("give --bit or --diameter, not both")
@@ -1638,6 +1778,8 @@ def parseArguments(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be more than 0")
     if arguments.overrun is not None and arguments.overrun < 0:
         parser.error("--overrun must be 0 or more")
+    if arguments.touch_z is not None and not math.isfinite(arguments.touch_z):
+        parser.error("--touch-z must be an ordinary number")
     if arguments.board is not None and arguments.corners is not None:
         parser.error("give --board or --corners, not both")
     if arguments.corners is not None:
