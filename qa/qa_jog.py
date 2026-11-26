@@ -214,7 +214,9 @@ CHECKLIST = {
                                "please run qa_jog.py again from the repository root and "
                                "choose to resume:",
                          "run": "python3 qa/qa_jog.py",
-                         "already": loggedInAgain, "verify": loggedInAgain},
+                         "already": loggedInAgain, "verify": loggedInAgain,
+                         # Already logged in again: S5's screen has just said so.
+                         "quietWhenDone": True},
                         jogStep(["Press Esc."],
                                 "No setup messages and no questions: it connects, homes "
                                 "and prints the two lines above. After Esc: \"Jog aborted. MPos: "

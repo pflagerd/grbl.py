@@ -143,7 +143,12 @@ CHECKLIST = {
                 "you with its operation."),
     "intro": evidence.consoleSteps("calibrate.py", REPO, qaRunner.shortPath(REPO)) + [
         {"do": "Please plug in the controller's USB cable and switch the controller on.",
-         "already": controllerConnected, "verify": controllerConnected, "again": True},
+         "already": controllerConnected, "verify": controllerConnected, "again": True,
+         # The port only shows the USB cable is in, not that the controller is on.
+         "whenDone": {
+             "do": lambda: (f"Checked for you: I can see the controller's port, {port()}, "
+                            "so its USB cable is plugged in. Please make sure the "
+                            "controller is switched on.")}},
         {"do": "Please make sure the spindle is off and there are no clamps or stock on "
                "the table, and keep a hand near the E-stop button throughout."},
         {"do": "The Z checks need the bit you will cut with, or one with the same "

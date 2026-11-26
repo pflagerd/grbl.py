@@ -223,7 +223,7 @@ class AnswerTests(RunnerTestCase):
         first = lines.index("S1:")
         # The heading, the note, then the step's own text, and the usual prompt.
         self.assertEqual(lines[first + 1:first + 5],
-                         ["", "    Already done: It's open.", "", "    Please open a console."])
+                         ["", "    Checked for you: It's open.", "", "    Please open a console."])
         self.assertEqual(self.script.prompts[0], qaRunner.FIRST_CONTINUE_PROMPT)
         self.assertEqual(len(calls), 1)            # Enter moves on without checking again
         self.assertNotIn(qaRunner.RECHECK_PROMPT, self.script.prompts)
@@ -259,7 +259,7 @@ class AnswerTests(RunnerTestCase):
         text = self.text()
         self.assertIn("S1:\n\n    Checked for you: All in place.\n\n"
                       "    I've recorded this test as passed.", text)
-        self.assertIn("S2:\n\n    Not needed: It's installed already.\n\n"
+        self.assertIn("S2:\n\n    Checked for you: It's installed already.\n\n"
                       "    I've recorded this test as skipped.", text)
         self.assertIn("S3:\n\n    Please look.", text)
         self.assertNotIn("Please install it.", text)
@@ -273,8 +273,10 @@ class AnswerTests(RunnerTestCase):
              "steps": [{"do": "Never shown."}]},
             {"id": "K2", "title": "k", "steps": [{"do": "Please look."}]}]}]}
         self.run_(["", "b", "q"], checklist=checklist)   # K1's screen, K2, b -> K1 again
-        self.assertEqual(self.text().count("Not needed: Not here."), 2)
+        self.assertEqual(self.text().count("Checked for you: Not here."), 2)
         self.assertNotIn("Never shown.", self.text())
+        # The check answered it, and its screen says so: no "Answered: skip".
+        self.assertNotIn("Answered:", self.text())
 
     def testEachDoneStepWaitsForEnter(self):
         checklist = dict(CHECKLIST, intro=[
@@ -283,8 +285,8 @@ class AnswerTests(RunnerTestCase):
             {"do": "Please read this."}])
         self.run_(["", "", "q"], checklist=checklist)
         text = self.text()
-        self.assertIn("S1:\n\n    Already done: It's open.\n\n    Please open a console.", text)
-        self.assertIn("S2:\n\n    Already done: It's there.\n\n    Please go there.", text)
+        self.assertIn("S1:\n\n    Checked for you: It's open.\n\n    Please open a console.", text)
+        self.assertIn("S2:\n\n    Checked for you: It's there.\n\n    Please go there.", text)
         self.assertIn("S3:\n\n    Please read this.", text)   # after an Enter at each
         self.assertEqual(self.script.prompts, [qaRunner.FIRST_CONTINUE_PROMPT,
                                                qaRunner.CONTINUE_PROMPT,
@@ -421,7 +423,7 @@ class StepBackTests(RunnerTestCase):
         self.run_(["", "", "", "b", "b", "b", "q"], checklist=self.checklist())
         self.assertEqual(self.shown(), ["Purpose.", "Intro one.", "Intro two.", "A one.",
                                         "Intro two.", "Intro one.", "Purpose."])
-        self.assertEqual(self.text().count("Already done: Done."), 2)
+        self.assertEqual(self.text().count("Checked for you: Done."), 2)
 
     def testBackReachesStepsThatWereDone(self):
         checklist = self.checklist()
@@ -791,7 +793,7 @@ class WhenDoneTests(RunnerTestCase):
         self.assertIn("\n\n        source .venv/bin/activate\n\n", text)
         self.assertNotIn("cd ", text)
         self.assertIn("You should see: The prompt starts with (.venv).", text)
-        self.assertNotIn("Already done:", text)
+        self.assertNotIn("Checked for you:", text)
         self.assertNotIn("If you haven't done so already", text)
         self.assertNotIn("Seen.", text)
         self.assertEqual(self.script.prompts, [qaRunner.FIRST_CONTINUE_PROMPT])
@@ -804,13 +806,13 @@ class WhenDoneTests(RunnerTestCase):
                       text)
         self.assertIn("You should see: The prompt starts with (.venv).", text)
         self.assertNotIn("It appears that", text)
-        self.assertNotIn("Already done:", text)
+        self.assertNotIn("Checked for you:", text)
 
-    def testWithoutWhenDoneStillSaysAlreadyDone(self):
+    def testWithoutWhenDoneSaysCheckedForYou(self):
         checklist = dict(CHECKLIST, intro=[
             {"do": "Please open it.", "already": lambda: (True, "It's open.")}])
         self.run_(["q"], checklist=checklist)
-        self.assertIn("Already done: It's open.", self.text())
+        self.assertIn("Checked for you: It's open.", self.text())
 
     def testWhenDoneIsChecked(self):
         def problems(whenDone, already=True):
@@ -893,7 +895,7 @@ class StyleTests(RunnerTestCase):
             return out[max(i for i in starts if i < at):]
         # A done step has a screen of its own.
         doneScreen = screenWith("(demo.py) S2:")
-        self.assertIn("    Already done: It's open.", doneScreen)
+        self.assertIn("    Checked for you: It's open.", doneScreen)
         self.assertNotIn("(demo.py) S2:", screenWith("(demo.py) S3:"))
         # Every step starts a fresh screen once the one before was answered, and
         # a later step of a test repeats the test's safety note.
@@ -933,7 +935,9 @@ class StyleTests(RunnerTestCase):
         checklist = self.checklist()
         item = checklist["sections"][0]["items"][0]
         item.update(needs="A probe plate.", safety="Hand near reset.")
-        self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True)
+        # Each prompt goes into the output too, where the terminal shows it.
+        self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True,
+                  onAsk=lambda prompt: self.output.append(prompt.rstrip()))
         out = self.output
         starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR] + [len(out)]
         labelled = 0
@@ -1124,14 +1128,14 @@ class BlankLineBeforePressEnterTests(RunnerTestCase):
             (qaRunner.CONTINUE_PROMPT, "    Please install it."),
             (qaRunner.RECHECK_PROMPT, "    Not yet."),                    # a verify's recheck
             (qaRunner.BODY + qaRunner.NEEDS_PROMPT, "    The next 2 tests need: probe plate"),
-            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as skipped."),  # Not needed
-            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as passed."),   # Checked
+            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as skipped."),  # skipIf
+            (qaRunner.CONTINUE_PROMPT, "    I've recorded this test as passed."),   # auto
         ])
-        self.assertIn("    Not needed: Not here.", self.output)
+        self.assertIn("    Checked for you: Not here.", self.output)
         self.assertIn("    Checked for you: All in place.", self.output)
-        # The "How did it go?" answer prompt is left as it was.
+        # The "How did it go?" answer prompt has its empty line too.
         answerPrompt = [lines for prompt, lines in seen if "How did it go?" in prompt][0]
-        self.assertEqual(answerPrompt[-1], "    Found it.")
+        self.assertEqual(answerPrompt[-2:], ["    Found it.", ""])
 
     def testKeyModePrintsTheEmptyLineThroughOut(self):
         output = []
@@ -1147,9 +1151,9 @@ class BlankLineBeforePressEnterTests(RunnerTestCase):
             runner.out("")                       # already an empty line: no second one
             runner.askKey(qaRunner.CONTINUE_PROMPT)
             self.assertEqual(output, ["You should see: it.", "", ""])
-            runner.out("Done.")                  # answer prompts get no empty line
+            runner.out("Done.")                  # answer prompts get one too
             runner.choose(qaRunner.ITEM_PROMPT, qaRunner.ITEM_WORDS)
-            self.assertEqual(output[-1], "Done.")
+            self.assertEqual(output[-2:], ["Done.", ""])
         self.assertTrue(shown.getvalue().startswith(qaRunner.CONTINUE_PROMPT))
 
 
@@ -1338,6 +1342,149 @@ class ChecklistSanityTests(unittest.TestCase):
                         if part.startswith("--"):
                             with self.subTest(item=item["id"], option=part):
                                 self.assertIn(f'"{part}"', sources[program])
+
+
+class CheckedForYouTests(RunnerTestCase):
+    """Every automatic check's result starts "Checked for you:" on screen, in
+    both real checklists, and a step its check finds done asks for nothing."""
+
+    def runReal(self, checklist):
+        """Run a real checklist to the end: Enter at every prompt, p at every
+        test, c at a recheck.  Returns its screens (lists of lines); self.seen
+        holds (prompt, the lines shown before it) for every prompt."""
+        self.output, self.seen, prompts = [], [], []
+
+        def ask(prompt=""):
+            prompts.append(prompt)
+            self.seen.append((prompt, list(self.output)))
+            self.output.append(prompt.rstrip())   # where the terminal shows it
+            if len(prompts) > 2000:
+                raise EOFError()
+            if "How did it go?" in prompt:
+                return "p"
+            return "c" if "c to carry on" in prompt else ""
+        directory = tempfile.mkdtemp(prefix="run-", dir=self.directory)
+        runner = qaRunner.Runner(checklist, resultsDir=directory, commit="abc1234", ask=ask,
+                                 out=self.output.append, clock=self.clock, styled=True)
+        self.assertTrue(runner.run()["finished"])
+        text = "\n".join(self.output)
+        return [screen.strip("\n").split("\n")
+                for screen in text.split(qaRunner.CLEAR) if screen.strip()]
+
+    def jogScreens(self, inPlace):
+        """qa_jog's screens with evdev and the 'input' group all in place (or none)."""
+        with mock.patch.multiple(qa_jog, evdevInVenv=lambda: inPlace,
+                                 listed=lambda: inPlace, inGroupNow=lambda: inPlace), \
+                mock.patch.object(evidence, "secondConsoleIn",
+                                  lambda directory: (inPlace, "Seen.")):
+            return self.runReal(qa_jog.CHECKLIST)
+
+    def testNoOldPrefixOnAnyScreenOfEitherChecklist(self):
+        runs = [("qa_jog.py in place", self.jogScreens(True)),
+                ("qa_jog.py not in place", self.jogScreens(False))]
+        with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")):
+            runs.append(("qa_calibrate.py", self.runReal(qa_calibrate.CHECKLIST)))
+        for name, screens in runs:
+            text = "\n".join("\n".join(screen) for screen in screens)
+            for old in ("Already done:", "Not needed:"):
+                self.assertNotIn(old, text, name)
+            self.assertIn("    Checked for you: ", text, name)
+        # With everything in place, qa_jog's S2 to S5 are skipped by their checks.
+        inPlace = "\n".join("\n".join(screen) for screen in runs[0][1])
+        self.assertIn("    Checked for you: evdev is already installed in the venv, so "
+                      "jog.py won't", inPlace)
+
+    def screenOf(self, screens, label):
+        found = [screen for screen in screens if screen[0] == label]
+        return "\n".join(found[0]) if found else None
+
+    def testS14IsPassedOverWhenLoggedInAgain(self):
+        # S13 (item S5) has just said the operator logged in again, so S14 (the
+        # log-out step of item S6) gets no screen: S6 opens on S15.
+        screens = self.jogScreens(True)
+        text = "\n".join("\n".join(screen) for screen in screens)
+        self.assertIsNone(self.screenOf(screens, "(qa_jog.py) S14:"))
+        self.assertIn("Checked for you: You've already logged in again",
+                      self.screenOf(screens, "(qa_jog.py) S13:"))
+        self.assertNotIn("Please log out and back in now", text)
+        self.assertNotIn("python3 qa/qa_jog.py", text)
+        self.assertIn("(qa_jog.py) S15:", text)
+        # Not logged in again yet (but listed): S14 still asks.
+        with mock.patch.multiple(qa_jog, evdevInVenv=lambda: True, listed=lambda: True,
+                                 inGroupNow=lambda: False), \
+                mock.patch.object(evidence, "secondConsoleIn",
+                                  lambda directory: (True, "Seen.")):
+            notYet = self.screenOf(self.runReal(qa_jog.CHECKLIST), "(qa_jog.py) S14:")
+        self.assertIn("Please log out and back in now", notYet)
+        self.assertIn("python3 qa/qa_jog.py", notYet)
+
+    def testEveryPromptHasOneEmptyLineAboveIt(self):
+        runs = []
+        for inPlace in (True, False):
+            self.jogScreens(inPlace)
+            runs.append(("qa_jog.py", self.seen))
+        with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")):
+            self.runReal(qa_calibrate.CHECKLIST)
+        runs.append(("qa_calibrate.py", self.seen))
+        for name, seen in runs:
+            self.assertGreater(len(seen), 20, name)
+            for prompt, lines in seen:
+                where = (name, prompt, lines[-3:])
+                self.assertEqual(lines[-1], "", where)
+                self.assertNotIn(lines[-2], ("", qaRunner.CLEAR), where)
+
+    def testControllerStepSaysItsChecked(self):
+        with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")), \
+                mock.patch.object(qa_calibrate, "port", lambda: os.devnull):
+            screens = self.runReal(qa_calibrate.CHECKLIST)
+        text = "\n".join(" ".join(line.strip() for line in screen) for screen in screens)
+        self.assertIn("Checked for you: I can see the controller's port", text)
+        self.assertNotIn("Please plug in the controller's USB cable", text)
+
+
+class QuietWhenDoneTests(RunnerTestCase):
+    """A step with "quietWhenDone" is passed over when its check finds it done."""
+
+    def checklist(self, done=True):
+        return {"name": "qw", "title": "Quiet", "program": "qw.py", "sections": [
+            {"title": "S", "items": [
+                {"id": "A1", "title": "a", "auto": lambda: ("pass", "Logged in again.")},
+                {"id": "B1", "title": "b", "safety": "Hand near reset.", "steps": [
+                    {"do": "Please log out.", "already": lambda: (done, "Done."),
+                     "quietWhenDone": True},
+                    {"do": "Please jog."}]},
+                {"id": "C1", "title": "c", "steps": [{"do": "Please look."}]}]}]}
+
+    def testPassedOverKeepsNumbersAndAsksNoEnter(self):
+        self.run_(["", "p", "p"], checklist=self.checklist())
+        text = self.text()
+        self.assertNotIn("Please log out.", text)
+        self.assertNotIn("qw.py) S2:", text)
+        # B1 opens on S3 (its number kept), with its Safety note, and goes
+        # straight to the answer: one Enter (A1's screen), then the answers.
+        self.assertIn("(qw.py) S3:\n\n    Safety: Hand near reset.\n\n    Please jog.", text)
+        self.assertIn("(qw.py) S4:", text)
+        self.assertEqual(self.script.prompts.count(qaRunner.FIRST_CONTINUE_PROMPT), 1)
+        self.assertEqual(len(self.script.prompts), 3)
+
+    def testShownWhenNotDone(self):
+        self.run_(["", "", "p", "p"], checklist=self.checklist(done=False))
+        self.assertIn("(qw.py) S2:\n\n    Safety: Hand near reset.\n\n    Please log out.",
+                      self.text())
+
+    def testBackSkipsAPassedOverStep(self):
+        # A1's screen, B1 (S3) b -> A1 again, Enter, B1 p, C1 b -> B1 (S3), b -> A1.
+        self.run_(["", "b", "", "p", "b", "b", "q"], checklist=self.checklist())
+        labels = [line for line in self.output if line.startswith("(qw.py) S")]
+        self.assertEqual(labels, ["(qw.py) S1:", "(qw.py) S3:", "(qw.py) S1:", "(qw.py) S3:",
+                                  "(qw.py) S4:", "(qw.py) S3:", "(qw.py) S1:"])
+        self.assertNotIn("Please log out.", self.text())
+
+    def testQuietWhenDoneNeedsAnAlreadyCheck(self):
+        checklist = self.checklist()
+        del checklist["sections"][0]["items"][1]["steps"][0]["already"]
+        with self.assertRaises(ValueError):
+            qaRunner.Runner(checklist, resultsDir=self.directory)
 
 
 if __name__ == "__main__":

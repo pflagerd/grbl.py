@@ -39,7 +39,8 @@ jog mode, where the keyboard is captured), and what to expect.  (An item may
 instead give do, command and expect itself: that is one step.)
 
 Checks are functions.  A step's "already" and "verify" return (done, message):
-"already" is asked before the step is shown (done: say so and skip it),
+"already" is asked before the step is shown (done: say "Checked for you: ..."
+and need no check; "whenDone" text instead, or no screen with "quietWhenDone"),
 "verify" after Enter (not done: say so, offer to check again).  An item's
 "skipIf" returns a reason to skip it, or None; "auto" returns (result, note)
 to answer it without asking.  "expect" may be a function too.  The checklist's
@@ -86,10 +87,17 @@ FIRST_NEEDS_PROMPT = "Press Enter to do these tests, s to skip them all (or q or
 CHECKLIST_KEYS = ("name", "title", "program", "purpose", "machine", "intro", "sections")
 ITEM_KEYS = ("id", "title", "where", "steps", "do", "command", "expect", "needs", "safety",
              "skipIf", "auto")
-STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again", "whenDone")
+STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again", "whenDone",
+             "quietWhenDone")
 # A step's "whenDone": fields that replace its own on the screen when its
-# "already" check finds it done (it then says so itself, so no "Already done").
+# "already" check finds it done (it then says so itself, so no "Checked for you").
 WHEN_DONE_KEYS = ("do", "run", "actions", "expect")
+# A step's "quietWhenDone": when its "already" check finds it done, the step
+# is passed over with no screen at all (the test before has just said so).
+
+# What every automatic check's result starts with on screen: a step's
+# "already", an item's "skipIf" and an item's "auto".
+CHECKED = "Checked for you: "
 # Terminal styling: the VT100/ANSI subset every Linux terminal supports, and
 # only on a real terminal (see useStyle), so piped output and tests stay plain.
 CLEAR = "\033[H\033[2J"      # home and clear the screen (scrollback is kept)
@@ -182,6 +190,9 @@ def checklistProblems(checklist):
                     if unknownStep:
                         problems.append(f"{itemId} step {number} has unknown keys "
                                         f"{sorted(unknownStep)}")
+                    if step.get("quietWhenDone") and not step.get("already"):
+                        problems.append(f"{itemId} step {number} has quietWhenDone but no "
+                                        f"already")
                     if "whenDone" in step:
                         whenDone = step["whenDone"]
                         if not isinstance(whenDone, dict):
@@ -219,6 +230,11 @@ def steps(item):
     if not item.get("do") and not item.get("expect"):
         return []   # answered by its "auto" check
     return [{"do": item.get("do"), "run": item.get("command"), "expect": item.get("expect")}]
+
+
+def passedOver(step):
+    """Is this a step with "quietWhenDone" whose check finds it done?"""
+    return bool(step.get("quietWhenDone") and step["already"]()[0])
 
 
 def keyboardIsTerminal():
@@ -518,7 +534,9 @@ class Runner:
     # -- input ------------------------------------------------------------
 
     def ask(self, prompt):
-        # Waits as long as it takes.  End of input and Ctrl-C mean quit.
+        # Waits as long as it takes.  End of input and Ctrl-C mean quit.  Every
+        # prompt has one empty line above it (gap() never doubles it).
+        self.gap()
         try:
             answer = (self.rawAsk or input)(prompt)
         except (EOFError, KeyboardInterrupt):
@@ -584,10 +602,9 @@ class Runner:
         keys are ignored).  Esc gives "q"; Ctrl-C and Ctrl-D quit.  Elsewhere (tests, piped
         input) it reads a line as usual.
 
-        A "Press Enter ..." prompt (highlight) always has an empty line above
-        it; gap() adds one only if there isn't one already."""
-        if highlight:
-            self.gap()
+        Like every prompt, it has an empty line above it; gap() adds one only
+        if there isn't one already."""
+        self.gap()
         shown = self.promptStyle(prompt) if highlight else prompt
         if self.rawAsk is not None or not keyboardIsTerminal():
             return self.ask(shown).strip().lower()
@@ -762,7 +779,9 @@ class Runner:
         if item.get("where"):
             self.say(item["where"], indent=BODY)
         previous = self.session["answers"].get(item["id"])
-        if previous:
+        # What the operator answered last time (not a check's own answer: its
+        # screen says what it found).
+        if previous and previous.get("by") != "check":
             note = f" ({previous['note']})" if previous.get("note") else ""
             self.field("Answered", f"{previous['result']}{note}", margin=BODY)
 
@@ -814,9 +833,11 @@ class Runner:
         can be talked about), then an empty line.  owner is "intro" or the
         item's ID (see numberSteps).
         A step whose "already" check finds it done is still shown on a screen
-        of its own, with "Already done: ..." above its text, and Enter moves on
-        without checking again.  If the step has "whenDone", its fields replace
-        the step's own on that screen instead, with no "Already done" line.
+        of its own, with "Checked for you: ..." above its text, and Enter moves
+        on without checking again.  If the step has "whenDone", its fields
+        replace the step's own on that screen instead, with no "Checked for
+        you" line.  If it has "quietWhenDone", it gets no screen at all: it is
+        passed over, going forward or back, and never asks for Enter.
         After the last step there is no Enter (the answer prompt follows)
         unless it has a check or enterAfterLast is set.
         only, if given, picks the steps to show (the rest keep their numbers).
@@ -832,6 +853,7 @@ class Runner:
         history = list(history)
         index = start
         first = True   # the first screen of this call shows header even if not fresh
+        goingBack = False
         while index < total:
             step = stepList[index]
             if only and not only(step):
@@ -839,6 +861,16 @@ class Runner:
                 continue
             label = self.label(owner, index)
             done, message = step["already"]() if step.get("already") else (False, "")
+            if done and step.get("quietWhenDone"):   # see passedOver
+                # Passed over: on b, on to the step before it instead.
+                if goingBack and history:
+                    index = history.pop()
+                elif goingBack and canGoBack:
+                    return BACK
+                else:
+                    index += 1
+                continue
+            goingBack = False
             fresh = self.freshScreen()
             self.gap()
             self.say(label, HEAD, LABEL)
@@ -851,7 +883,7 @@ class Runner:
                 self.showStep({**step, **step["whenDone"]})
             else:
                 if done:
-                    self.say(f"Already done: {message}", BODY)
+                    self.say(CHECKED + message, BODY)
                     self.out("")
                 self.showStep(step)
             # A step already done needs no check after Enter.
@@ -874,7 +906,7 @@ class Runner:
                     if not history:
                         return BACK
                     index = history.pop()
-                    wentBack = True
+                    wentBack = goingBack = True
                     break
                 if not check or (answer == "c" and prompt == RECHECK_PROMPT):
                     break
@@ -907,19 +939,18 @@ class Runner:
             checked = None
             reason = item["skipIf"]() if item.get("skipIf") else None
             if reason:
-                checked = (SKIP, reason, f"Not needed: {reason}")
+                checked = (SKIP, reason)
             elif item.get("auto"):
-                result, note = item["auto"]()
-                checked = (result, note, f"Checked for you: {note}")
+                checked = item["auto"]()
             if checked:
-                result, note, shown = checked
+                result, note = checked
                 done = {PASS: "passed", FAIL: "failed", SKIP: "skipped"}[result]
                 self.gap()
                 self.say(self.label(item["id"], 0), HEAD, LABEL)
                 self.out("")
                 self.showItem(index)
                 self.gap()
-                self.say(shown, BODY)
+                self.say(CHECKED + note, BODY)
                 self.out("")
                 self.say(f"I've recorded this test as {done}.", BODY)
                 self.out("")
@@ -939,7 +970,9 @@ class Runner:
             return self.runSteps(stepList, item["id"], header=lambda: self.showItem(index),
                                  start=start, history=history, canGoBack=canGoBack)
         if fromEnd and stepList:
-            shown = show(len(stepList) - 1, range(len(stepList) - 1))
+            # Steps passed over (quietWhenDone) were never shown, so b skips them.
+            shown = show(len(stepList) - 1, [i for i in range(len(stepList) - 1)
+                                             if not passedOver(stepList[i])])
         elif stepList:
             shown = show()
         else:
