@@ -34,7 +34,8 @@ The parts, kept separate so they can be tested without a machine:
     planRaster()                        pure: board + bit + bounds -> G-code
     loadBits(), saveBits(), chooseBit() the bit list (profiles/bits.json)
     streamGcode(), waitForIdle(), safeStop()   talk to Grbl
-    runSurfacing()                      the operator flow
+    Surfacing.run()                     the operator flow
+    Surfacing.runSafely()               the same, with safeStop() on Ctrl-C or any error
 """
 
 import argparse
@@ -635,7 +636,7 @@ def safeStop(grbl, out=print, sleep=time.sleep, clock=time.monotonic, manualSpin
             actions.append("M5 (Grbl's spindle output off)" if manualSpindle else "M5 (spindle off)")
         report = readStatus(grbl)
     except Exception as error:
-        out(f"!! The safety stop itself failed: {error}.  Use the reset button or power switch.")
+        out(f"!! The safety stop itself failed: {error}.  Use the E-stop button.")
         return None
     state, _ = stateOf(report)
     _, mpos, _, _ = jogModule.parseStatus(report) if report else (None, None, None, None)
@@ -644,7 +645,7 @@ def safeStop(grbl, out=print, sleep=time.sleep, clock=time.monotonic, manualSpin
     if state == 'Alarm':
         out("!! Grbl is in Alarm: the position may be lost.  Home ($H) before anything else.")
     elif state is None:
-        out("!! No status report from Grbl.  Check the machine; use the reset button if it is moving.")
+        out("!! No status report from Grbl.  Check the machine; use the E-stop button if it is moving.")
     else:
         out("!! The position is kept; the bit may still be in the wood, so lift it by jog.")
     return state
@@ -1190,7 +1191,7 @@ class Surfacing:
                      "Grbl can't see it.  Use the knob NOW, before homing, for a rough move if you "
                      "like.  After homing, move only by jog: a knob turn would make Grbl's position, "
                      "and the soft limits, wrong.")
-            self.ask("Keep a hand near the reset button.  Press Enter to home the machine. ")
+            self.ask("Keep a hand near the E-stop button.  Press Enter to home the machine. ")
             self.homingStarted = True   # from here on the machine may move
             alarm = home()
             if alarm is not None:

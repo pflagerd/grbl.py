@@ -1133,6 +1133,68 @@ class SafetyTests(FlowTestBase):
             ssb.streamGcode(grbl, ["G53 G1 X-1.000 F100"], timeout=5, clock=lambda: next(ticks))
 
 
+class OperatorWordingTests(FlowTestBase):
+    """The operator is told to use the E-stop button, never "the reset button".
+
+    The Grbl soft reset (Ctrl-X) is a different thing and keeps its name.
+    """
+
+    BANNED = ("reset button", "reset/power", "power switch")
+
+    def testNoOperatorMessageSaysResetButton(self):
+        # Every string literal in the script, f-string pieces included: the
+        # prompts and messages the operator can see are all built from these.
+        import ast
+        with open(os.path.join(HERE, "surface-spoiler-board.py")) as source:
+            tree = ast.parse(source.read())
+        found = [(node.lineno, node.value) for node in ast.walk(tree)
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                 and any(banned in node.value.lower() for banned in self.BANNED)]
+        self.assertEqual(found, [])
+
+    def testHomingPromptSaysEStopButton(self):
+        grbl, surfacing, operator = self.run_flow(
+            START + PARAMETERS + FIRST_PASS + [("Another pass at -0.3 mm (total -0.6)", "s")]
+            + PARK + END)
+        homing = next(p for p in operator.prompts if "Press Enter to home" in p)
+        self.assertIn("Keep a hand near the E-stop button.", homing)
+
+    def testFailedSafetyStopSaysEStopButton(self):
+        grbl = FakeGrbl()
+        grbl.state = 'Run'
+
+        def brokenReset():
+            raise OSError("port closed")
+        grbl.softReset = brokenReset
+        self.assertIsNone(ssb.safeStop(grbl, self.output.append, sleep=lambda s: None))
+        self.assertIn("The safety stop itself failed: port closed.  Use the E-stop button.",
+                      self.text())
+
+    def testNoStatusReportSaysEStopButton(self):
+        grbl = FakeGrbl()
+        grbl.readline = lambda: b""      # Grbl says nothing at all
+        ticks = iter(range(0, 1000, 5))
+        self.assertIsNone(ssb.safeStop(grbl, self.output.append, sleep=lambda s: None,
+                                       clock=lambda: next(ticks)))
+        self.assertIn("use the E-stop button if it is moving.", self.text())
+        self.assertIn("soft reset (Ctrl-X)", self.text())   # the Grbl reset keeps its name
+
+
+class DocstringTests(unittest.TestCase):
+    def testPartsListNamesRealThings(self):
+        # Each "name()" in the module docstring's parts list must exist.
+        parts = ssb.__doc__.split("The parts, kept separate", 1)[1]
+        names = re.findall(r'([A-Za-z_][\w.]*)\(\)', parts)
+        self.assertIn("Surfacing.run", names)
+        self.assertIn("Surfacing.runSafely", names)
+        for name in names:
+            target = ssb
+            for piece in name.split("."):
+                self.assertTrue(hasattr(target, piece), f"{name}() is not in surface-spoiler-board.py")
+                target = getattr(target, piece)
+            self.assertTrue(callable(target), name)
+
+
 class SaveSettingsTests(FlowTestBase):
     def testSavedBitDefaultsAndCommandLinePrecedence(self):
         ssb.saveBits(self.bitsPath, {"35mm-flat": {"diameter": 35.0, "feed": 250,
