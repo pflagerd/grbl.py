@@ -1,10 +1,115 @@
 import json
+import re
 import serial
 import time
 import warnings
 from dataclasses import dataclass, field, fields, asdict
 
 debug = False
+
+# What Grbl 1.1h can send at startup is documented in https://github.com/pflagerd/grbl.py/issues/13,
+# with links to the firmware source (https://github.com/gnea/grbl, version 1.1h build 20190830).
+
+# The firmware version on the owner's machines. Any other version, or none, connects with a warning:
+# the version never stops the handshake.
+_testedVersion = "1.1h"
+# report.c report_init_message(): "\r\nGrbl 1.1h ['$' for help]\r\n"
+_welcomePattern = re.compile(r"Grbl (\S+) \['\$' for help\]")
+# report.c report_realtime_status(): "<Idle|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0>", "<Hold:0|...>", "<Door:1|...>"
+_statusPattern = re.compile(r"<([A-Za-z]+)(?::(\d+))?([^>]*)>")
+# report.c report_build_info(): "[VER:1.1h.20190830:]"
+_buildInfoPattern = re.compile(r"\[VER:(\d+\.\d+[a-z]?)\.(\d+):")
+# report.c report_execute_startup_message(): ">G54:ok" or ">G99:error:20"
+_startupLinePattern = re.compile(r"^>(.*):(ok|error:\d+)$")
+
+# How long one read may block while the handshake is running.
+_handshakeReadTimeoutSeconds = 0.5
+# How long the handshake waits for an answer to its '?' liveness probe before sending another.
+_probeRetrySeconds = 1.0
+
+
+class GrblStartupError(RuntimeError):
+    """The startup handshake with the controller failed. The message says what was received."""
+
+
+class GrblStateError(GrblStartupError):
+    """The controller is in a state the constructor cannot safely continue from (Door, Sleep, Run, ...)."""
+
+
+class GrblLimitSwitchError(GrblStartupError):
+    """The controller reported [MSG:Check Limits]: a limit switch is engaged at connect."""
+
+
+class GrblSettingsError(GrblStartupError):
+    """A motion-critical $-setting ($3, $23, $20, $130-$132) differs from the machine profile."""
+
+
+def classifyLine(rawLine):
+    """Classify one line received from Grbl by how it starts, not by where it comes in the sequence.
+
+    rawLine may be bytes or str. Returns (kind, text) where text is the decoded, stripped line and kind is one of:
+    'blank', 'welcome', 'message', 'startupLine', 'alarm', 'status', 'buildInfo', 'ok', 'error', 'unknown'.
+    """
+    if isinstance(rawLine, (bytes, bytearray)):
+        text = bytes(rawLine).decode('utf-8', errors='replace')  # stray bytes must not raise
+    else:
+        text = rawLine
+    text = text.strip()
+
+    if text == "":
+        return 'blank', text
+    if _welcomePattern.search(text):  # search(), so stray bytes in front of the welcome message are tolerated
+        return 'welcome', text
+    if text.startswith("[MSG:"):
+        return 'message', text
+    if text.startswith("[VER:"):
+        return 'buildInfo', text
+    if text.startswith(">"):
+        return 'startupLine', text
+    if text.startswith("ALARM:"):
+        return 'alarm', text
+    if text.startswith("<"):
+        return 'status', text
+    if text == "ok":
+        return 'ok', text
+    if text.startswith("error:"):
+        return 'error', text
+    return 'unknown', text
+
+
+def parseStatusReport(text):
+    """Parse a Grbl 1.1 status report such as '<Idle|MPos:0.000,0.000,0.000|Bf:15,127|FS:0,0>'.
+
+    Returns {'state': 'Idle', 'subState': None, 'fields': {'MPos': '0.000,0.000,0.000', ...}},
+    or None if text is not a status report. For '<Hold:0|...>' state is 'Hold' and subState is '0'.
+    """
+    match = _statusPattern.search(text)
+    if not match:
+        return None
+    fields = {}
+    for field in match.group(3).split('|'):
+        if ':' in field:
+            name, value = field.split(':', 1)
+            fields[name] = value
+    return {'state': match.group(1), 'subState': match.group(2), 'fields': fields}
+
+
+def limitPins(pinState):
+    """The limit-switch letters in a status report's Pn: value, e.g. 'XZ' from 'XZP'. '' if none.
+
+    Pn: lists every input that is active: X, Y, Z for the limit pins, and P, D, H, R, S for the
+    probe, door, hold, reset and cycle-start pins. Only X, Y and Z matter for limit switches.
+    """
+    return "".join(letter for letter in "XYZ" if letter in (pinState or ""))
+
+
+def _spindleSpeedWord(speed):
+    """The G-code S word for a spindle speed: 'S10000' for 10000 or 10000.0, 'S12.5' for 12.5.
+
+    f'S{speed}' would give 'S10000.0' for a float. '%f' never uses scientific notation (str() of
+    1e16 is '1e+16'); stripping the trailing zeros, then a trailing '.', drops the '.0'.
+    """
+    return 'S' + ('%f' % float(speed)).rstrip('0').rstrip('.')
 
 
 @dataclass
@@ -29,7 +134,7 @@ class MachineProfile:
 
     # Tool type — laser mode changes spindle handling (M4 dynamic power, no spin-up)
     isLaser: bool = False
-    defaultSpindleSpeed: float = 1000.0    # RPM, or S-value power for laser
+    defaultSpindleSpeed: float = 10000.0   # RPM, or S-value power for laser
 
     # Grbl $-settings this machine must have, e.g. {"$23": "3", "$130": "300.000"}.
     # Values are strings compared against the exact text Grbl echoes from `$$`.
@@ -62,8 +167,7 @@ class MachineProfile:
 
 
 class GrblController(serial.Serial):
-    HANDSHAKE_TIMEOUT = 10  # seconds to wait for the startup banner after opening the port
-    EXPECTED_GRBL_VERSION = "1.1h"
+    HANDSHAKE_TIMEOUT = 10.0  # seconds; the default for handshakeDeadlineSeconds
 
     # Profile settings where a mismatch means motion in the wrong direction or without
     # bounds checking — a tool crash waiting to happen.  These raise instead of warning.
@@ -109,10 +213,19 @@ class GrblController(serial.Serial):
         bottomLeftZUp = '3'
         topRightZDown = '4'
 
-    def __init__(self, portDeviceName=None, portBaudRate=None, homeOnConnect=False,
-                 profile=None, applySettings=False):
+    def __init__(self, portDeviceName=None, portBaudRate=None, profile=None, *, handshakeDeadlineSeconds=None,
+                 resetOnConnect=False, homeOnConnect=False, applySettings=False):
+        # Only the port, the baud rate and the profile may be passed by position; everything after the * must be named.
+        # Their types are checked before the port is opened, so that a positional mistake fails at once.
+        if portDeviceName is not None and not isinstance(portDeviceName, str):
+            raise TypeError(f"portDeviceName must be a str such as '/dev/ttyUSB0', not {portDeviceName!r}")
+        if portBaudRate is not None and (isinstance(portBaudRate, bool) or not isinstance(portBaudRate, int)):
+            raise TypeError(f"portBaudRate must be an int such as 115200, not {portBaudRate!r}")
+        if profile is not None and not isinstance(profile, MachineProfile):
+            raise TypeError(f"profile must be a MachineProfile, not {profile!r}")
+
         self.profile = profile
-        self.grblVersion = None  # set from the startup banner during the handshake
+        self.grblVersion = None  # set during the handshake, for example '1.1h'
         self.spindleMotorSpeed = 0
         self.homingPosition = profile.homingPosition if profile else self.HomingPositions.bottomLeftZUp
         self.machineCoordinates = None
@@ -122,23 +235,21 @@ class GrblController(serial.Serial):
         self.portBaudRate = portBaudRate or (profile.portBaudRate if profile else 115200)
         super().__init__(self.portDeviceName, self.portBaudRate, timeout=30)
 
-        state = self._performHandshake()
-        if state == "Alarm":
-            self.send("$X")  # unlock — we saw the alarm, we're clearing it
-        elif state != "Idle":
-            # Run/Jog/Hold/Door: the machine is moving or suspended mid-job — possibly
-            # another sender's.  Sleep/Check need a reset first.  Don't barge in.
-            raise RuntimeError(f"Grbl on {self.portDeviceName} is in state '{state}', not "
-                               f"Idle or Alarm — refusing to configure a machine that may "
-                               f"be mid-job. Resolve that first (reset/resume), then reconnect.")
+        try:
+            # Read whatever Grbl sends at startup, ask it for its state, and unlock it if it is in Alarm.
+            # Raises GrblStartupError (or a subclass) saying what was received if that cannot be done.
+            self._handshake(handshakeDeadlineSeconds, resetOnConnect)
 
-        # Verify (or apply) the machine's $-settings before anything moves — homing with
-        # a wrong $23 drives the axes away from the switches and into the hard stops.
-        if profile:
-            self._verifyProfileSettings(applySettings)
+            # Verify (or apply) the machine's $-settings before anything moves — homing with
+            # a wrong $23 drives the axes away from the switches and into the hard stops.
+            if profile:
+                self._verifyProfileSettings(applySettings)
+        except GrblStartupError:  # includes GrblSettingsError
+            self.close()
+            raise
 
         # DPP: Set spindle motor speed
-        self.send(f'S{profile.defaultSpindleSpeed if profile else 10000}')
+        self.send(_spindleSpeedWord(profile.defaultSpindleSpeed if profile else 10000))
 
         # DPP: Set homing origin
         self.send('$23=' + self.homingPosition)
@@ -165,65 +276,176 @@ class GrblController(serial.Serial):
         if getattr(self, 'is_open', False):
             super().close()
 
-    def _performHandshake(self):
-        # UGS-style handshake: poll with `?` about once a second until a <...> status
-        # report arrives, and return the machine state parsed from it.  `?` is a
-        # realtime command Grbl answers in any state, so the first valid report is the
-        # liveness proof — it works whether the board rebooted on connect (DTR pulse,
-        # banner arrives mid-poll and we capture the version from it) or was already
-        # running (no banner ever comes, which is normal, not an error).
-        originalTimeout = self.timeout
-        self.timeout = 1  # one poll per second; also the per-line read wait
+    def _now(self):
+        # A method so that tests can substitute a fake clock.
+        return time.monotonic()
+
+    def _startupFailureText(self, what):
+        if self.startupTranscript:
+            received = "Received: " + "; ".join(repr(line) for line in self.startupTranscript)
+        else:
+            received = "Received nothing at all."
+        return f"Grbl startup on {self.portDeviceName} failed: {what} {received}"
+
+    def _readStartupLine(self):
+        # Reads one line during the handshake, records it, and returns (kind, text).
+        # kind is 'timeout' if nothing complete arrived within the read timeout.
+        raw = self.readline()
+        if debug:
+            print("received " + str(raw))
+        if raw == b"":
+            return 'timeout', ""
+        if not raw.endswith(b"\n"):
+            # The read timed out part-way through a line. Keep the piece and wait for the rest.
+            self._startupPartialLine += raw
+            return 'timeout', ""
+        raw = self._startupPartialLine + raw
+        self._startupPartialLine = b""
+
+        kind, text = classifyLine(raw)
+        if kind == 'blank':
+            return kind, text
+        self.startupTranscript.append(text)
+        if kind == 'message':
+            self.startupMessages.append(text[len("[MSG:"):].rstrip("]"))
+        elif kind == 'startupLine':
+            match = _startupLinePattern.match(text)
+            self.startupLineResults.append((match.group(1), match.group(2)) if match else (text[1:], ""))
+        elif kind == 'alarm':
+            self.startupAlarms.append(text[len("ALARM:"):])
+        return kind, text
+
+    def _queryBuildVersion(self, deadline):
+        # Asks for the firmware version with $I. Used when no welcome message was seen, because the
+        # controller was not reset by opening the port. $I is only accepted in the Idle and Alarm states.
+        if debug:
+            print("sending " + str(b"$I\n"))
+        self.write(b"$I\n")
+        version = None
+        while self._now() < deadline:
+            kind, text = self._readStartupLine()
+            if kind == 'buildInfo':
+                match = _buildInfoPattern.search(text)
+                if match:
+                    version = match.group(1)
+            elif kind in ('ok', 'error'):
+                break
+        return version
+
+    def _handshake(self, deadlineSeconds=None, resetOnConnect=False):
+        """Read Grbl's startup output by pattern, ask for its state with '?', and act on that state.
+
+        Uses only self.readline(), self.write() and self.send(), so it can be tested with scripted lines.
+        Afterwards the results are in self.grblVersion, self.startupState, self.startupMessages,
+        self.startupLineResults, self.startupAlarms and self.startupTranscript.
+
+        '?' is the liveness probe. It is sent at once, and again every _probeRetrySeconds until a
+        status report arrives or deadlineSeconds runs out. Grbl answers '?' in every state, so the
+        first status report proves the controller is alive whether or not it was reset. A '?' sent
+        while the controller is still resetting is lost, which is why it is retried, and why another
+        is sent as soon as the welcome message arrives.
+
+        pyserial discards any input already waiting when it opens the port (Serial.open() calls
+        _reset_input_buffer()), so a welcome message is only ever seen if the controller sends it
+        after the port is opened, that is, if opening the port resets the controller. The welcome
+        message is therefore optional: without it, the version is asked for with $I.
+        """
+        self.startupTranscript = []    # every non-blank line received, decoded
+        self.startupMessages = []      # the text inside each [MSG:...]
+        self.startupLineResults = []   # (line, 'ok' or 'error:N') for each stored $N startup line that ran
+        self.startupAlarms = []        # the code from each ALARM:N
+        self.grblVersion = None        # for example '1.1h'
+        self.startupState = None       # for example 'Alarm' or 'Idle'
+        self._startupPartialLine = b""
+        if deadlineSeconds is None:
+            deadlineSeconds = self.HANDSHAKE_TIMEOUT
+
+        start = self._now()
+        deadline = start + deadlineSeconds
+        nextProbe = start  # the first '?' goes out at once
+        status = None
+
+        savedTimeout = self.timeout
+        self.timeout = _handshakeReadTimeoutSeconds
         try:
-            statusReport = None
-            deadline = time.monotonic() + self.HANDSHAKE_TIMEOUT
-            while statusReport is None and time.monotonic() < deadline:
-                super().write(b"?")
-                while True:  # read whatever this poll interval brings: boot chatter, MSGs, the report
-                    line = super().readline()
+            if resetOnConnect:
+                # Soft reset (ctrl-x). Off by default: during motion it stops the steppers and position is lost.
+                # drain=False: what the controller sends after the reset is exactly what the handshake reads.
+                self.softReset(drain=False)
+
+            while status is None and self._now() < deadline:
+                if self._now() >= nextProbe:
+                    # '?' is a real-time byte: no newline, and no 'ok' comes back, only a status report.
                     if debug:
-                        print("received " + str(line))
-                    if line == b"":  # quiet; poll again
-                        break
-                    if line.startswith(b"Grbl "):
-                        # b"Grbl 1.1h ['$' for help]\r\n" — fresh boot; capture the version
-                        self.grblVersion = line.decode("utf-8", errors="replace").split()[1]
-                        if self.grblVersion != self.EXPECTED_GRBL_VERSION:
-                            warnings.warn("Expected Grbl version " + self.EXPECTED_GRBL_VERSION
-                                          + " but connected to " + self.grblVersion)
-                    if line.startswith(b"<"):
-                        statusReport = line.decode("utf-8", errors="replace")
-                        break
+                        print("sending " + str(b"?"))
+                    self.write(b"?")
+                    nextProbe = self._now() + _probeRetrySeconds
 
-            if statusReport is None:
-                raise RuntimeError("No status report from Grbl on " + self.portDeviceName
-                                   + " within " + str(self.HANDSHAKE_TIMEOUT)
-                                   + "s of ? polling; not a live Grbl, or wrong port/baud rate.")
+                kind, text = self._readStartupLine()
+                if kind == 'welcome':
+                    self.grblVersion = _welcomePattern.search(text).group(1)
+                    # The controller has just reset, so any '?' sent before now was lost. Probe again at once
+                    # rather than waiting for the next retry. Grbl sends nothing to mark the end of its startup
+                    # output, but the status report arrives after the startup messages ([MSG:Check Limits] too).
+                    if debug:
+                        print("sending " + str(b"?"))
+                    self.write(b"?")
+                    nextProbe = self._now() + _probeRetrySeconds
+                elif kind == 'status':
+                    status = parseStatusReport(text)
 
-            # Drain any remaining startup lines (e.g. the '$H'|'$X' unlock MSG) so the
-            # next command doesn't read stale chatter.
-            self.timeout = 0.5
-            while True:
-                line = super().readline()
-                if line == b"":
-                    break
-                if debug:
-                    print("received " + str(line))
-
-            # '<Alarm|MPos:...>' → 'Alarm'; '<Hold:0|...>' → 'Hold'
-            return statusReport[1:].split('|')[0].split(':')[0]
+            if status is not None and self.grblVersion is None and status['state'] in ('Idle', 'Alarm'):
+                self.grblVersion = self._queryBuildVersion(deadline)
         finally:
-            self.timeout = originalTimeout
+            self.timeout = savedTimeout
+
+        if status is None:
+            raise GrblStartupError(self._startupFailureText(
+                f"no status report arrived within {deadlineSeconds} seconds."))
+
+        self.startupState = status['state']
+        if self.startupState not in ('Idle', 'Alarm'):
+            raise GrblStateError(self._startupFailureText(
+                f"the controller is in the {self.startupState} state; it must be Idle or Alarm to continue."))
+
+        # The owner's ruling: the firmware version never raises. Anything but 1.1h only warns.
+        if self.grblVersion is None:
+            warnings.warn(f"Grbl on {self.portDeviceName}: could not determine the firmware version (no welcome "
+                          f"message, and no [VER:...] reply to $I); expected {_testedVersion}. Continuing.")
+        elif self.grblVersion != _testedVersion:
+            warnings.warn(f"Grbl on {self.portDeviceName} reports version {self.grblVersion}; "
+                          f"expected {_testedVersion}. Continuing.")
+
+        for startupLine, result in self.startupLineResults:
+            if result != "ok":
+                # Not raised: the machine is usable, and raising would lock out the tool needed to fix $N.
+                warnings.warn(f"Grbl stored startup line {startupLine!r} failed with {result}. Check it with $N.")
+
+        if self.startupState == 'Alarm':
+            if "Check Limits" in self.startupMessages:
+                # Deliberately not unlocked with $X: the machine is sitting on a limit switch.
+                raise GrblLimitSwitchError(self._startupFailureText(
+                    "a limit switch is engaged ([MSG:Check Limits]). "
+                    "Move the machine off the switch, or check the switch wiring, then connect again."))
+            engaged = limitPins(status['fields'].get('Pn'))
+            if engaged:
+                # The same refusal for a controller that was not reset, so never printed [MSG:Check Limits]:
+                # the status report's Pn: field shows the limit pin is active right now.
+                raise GrblLimitSwitchError(self._startupFailureText(
+                    f"a limit switch is engaged (the status report shows limit pin {engaged} active). "
+                    "Move the machine off the switch, or check the switch wiring, then connect again."))
+            # Unlock
+            self.send("$X")
 
     def getSettings(self):
         # Query all $-settings; Grbl answers with one "$n=value" line each, then "ok".
         gcode = "$$\n".encode('utf-8')
         if debug:
             print("sending " + str(gcode))
-        super().write(gcode)
+        self.write(gcode)  # self, not super(), like send(): lets tests substitute a scripted controller
         settings = {}
         while True:
-            line = super().readline()
+            line = self.readline()
             if debug:
                 print("received " + str(line))
             if line in [b"ok\r\n", b""]:
@@ -256,7 +478,7 @@ class GrblController(serial.Serial):
                            for key, (expected, actual) in mismatches.items())
         critical = [key for key in mismatches if key in self.CRITICAL_SETTINGS]
         if critical:
-            raise RuntimeError(
+            raise GrblSettingsError(
                 f"Machine '{self.profile.name}' has unsafe $-settings ({', '.join(critical)} "
                 f"control motion direction/bounds): {report}. "
                 + ("Applying them failed." if applySettings
@@ -276,10 +498,9 @@ class GrblController(serial.Serial):
             if debug:
                 print("received " + str(line))
             # b'<Idle|MPos:-417.000,-307.000,-3.000|Bf:15,127|FS:0,0|WCO:-417.000,-307.000,-3.000>\r\n'
-            if b'Idle' in line and b'MPos' in line:
-                statusLines = line.decode('utf-8').split('|')
-                indexOfColon = statusLines[1].index(':')
-                self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in statusLines[1][indexOfColon + 1:].split(',')))
+            report = parseStatusReport(line.decode('utf-8', errors='replace'))
+            if report and report['state'] == 'Idle' and 'MPos' in report['fields']:
+                self.machineCoordinates = GrblController.Vector(tuple(float(n) for n in report['fields']['MPos'].split(',')))
                 if debug:
                     print('machineCoordinates were read from status as ', self.machineCoordinates)
             if line == b"ok\r\n":
@@ -294,10 +515,8 @@ class GrblController(serial.Serial):
         # The machine state from a fresh status report: 'Idle', 'Run', 'Hold', 'Jog',
         # 'Alarm', 'Door', 'Check', 'Home', 'Sleep' — or None if no report came back.
         # Substate suffixes are stripped: '<Hold:0|...>' → 'Hold'.
-        statusReport = self.getStatus()
-        if statusReport and statusReport.startswith('<'):
-            return statusReport[1:].split('|')[0].split(':')[0]
-        return None
+        report = parseStatusReport(self.getStatus() or "")
+        return report['state'] if report else None
 
     def getGCodeParameters(self):
         pass
@@ -352,7 +571,7 @@ class GrblController(serial.Serial):
         if 'feedRate' in kwargs:
             feedRate = float(kwargs['feedRate'])
 
-        spindleSpeed = self.profile.defaultSpindleSpeed if self.profile else 1000
+        spindleSpeed = self.profile.defaultSpindleSpeed if self.profile else 10000
         if 'spindleSpeed' in kwargs:
             spindleSpeed = float(kwargs['spindleSpeed'])
 
@@ -400,21 +619,29 @@ class GrblController(serial.Serial):
         return self.getMachineCoordinates()
 
     # See: https://github.com/gnea/grbl/wiki/Grbl-v1.1-Commands#:~:text=run%20as%20normal.-,%24H%20%2D%20Run%20homing%20cycle,-This%20command%20is
-    def softReset(self):
+    def softReset(self, drain=True):
         # Ctrl-X: immediate reset.  Grbl reboots and re-prints its banner; drain it all
-        # so the next command doesn't read stale lines.
-        super().write(b'\x18')
+        # so the next command doesn't read stale lines.  Returns the drained lines.
+        # drain=False only sends ctrl-X, for a caller that reads the banner itself (the handshake).
+        if debug:
+            print("sending " + str(b'\x18'))
+        self.write(b'\x18')  # self, not super(), like send(): lets tests substitute a scripted controller
+        drained = []
+        if not drain:
+            return drained
         originalTimeout = self.timeout
         self.timeout = 2
         try:
             while True:
-                line = super().readline()
+                line = self.readline()
                 if line == b"":
                     break
                 if debug:
                     print("received " + str(line))
+                drained.append(line)
         finally:
             self.timeout = originalTimeout
+        return drained
 
     def tryHomingCycle(self, homingPosition):
         # Like runHomingCycle(), but a homing failure (switch not found / lost) returns
@@ -435,7 +662,13 @@ class GrblController(serial.Serial):
                     return None
                 if line.startswith(b"ALARM:"):
                     alarmCode = line.decode('utf-8', errors='replace').strip().partition(':')[2]
-                    self.softReset()
+                    afterReset = self.softReset()
+                    # As in the startup handshake: never unlock a machine that is sitting on a limit switch.
+                    # The failure is still returned, not raised (the owner's ruling), so a calibration sweep
+                    # records it and goes on; the machine is left locked in Alarm, and $23=/$H still work there.
+                    engaged = limitPins(self.getPinState())
+                    if engaged or any(b"Check Limits" in resetLine for resetLine in afterReset):
+                        return alarmCode
                     self.send("$X")  # reset after a homing alarm leaves Grbl locked
                     return alarmCode
                 if line == b"":
@@ -448,10 +681,8 @@ class GrblController(serial.Serial):
         # e.g. "XY" if both those limit inputs are active, "" if nothing is triggered.
         # Note: stock Grbl shares one pin per axis, so "X" means *a* switch on X —
         # it cannot distinguish the min switch from the max switch.
-        statusReport = self.getStatus()
-        if statusReport and 'Pn:' in statusReport:
-            return statusReport.split('Pn:')[1].split('|')[0].rstrip('>\r\n')
-        return ""
+        report = parseStatusReport(self.getStatus() or "")
+        return report['fields'].get('Pn', "") if report else ""
 
     def runHomingCycle(self, homingPosition=None):
         if homingPosition is None:
@@ -474,9 +705,9 @@ class GrblController(serial.Serial):
         gcode = gcode.encode('utf-8')
         if debug:
             print("sending " + str(gcode))
-        super().write(gcode)
+        self.write(gcode)  # self, not super(): same behaviour, but lets tests substitute a scripted controller
         while True:
-            line = super().readline()
+            line = self.readline()
             if debug:
                 print("received " + str(line))
             if line in [b"ok\r\n", b""]:
@@ -527,14 +758,14 @@ class GrblController(serial.Serial):
 
         self.send(f'G10 P1 L2 X{newPosition.x} Y{newPosition.y} Z{newPosition.z}')
 
-    def startSpindleMotor(self, speed=1000):
+    def startSpindleMotor(self, speed=10000):
         self.spindleMotorSpeed = speed
-        self.send(f'S{speed}')
+        self.send(_spindleSpeedWord(speed))
         return speed
 
     def stopSpindleMotor(self, speed=0):
         self.spindleMotorSpeed = speed
-        self.send(f'S{speed} M5')
+        self.send(f'{_spindleSpeedWord(speed)} M5')
         return speed
 
     def unlock(self):
