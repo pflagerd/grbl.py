@@ -29,6 +29,11 @@ import qa_jog  # noqa: E402
 
 BODY_ = qaRunner.BODY
 
+# The two real checklists, for the machine whose profile is committed in profiles/.
+MACHINE = "6060 ProverXL V1"
+JOG_6060 = qa_jog.makeChecklist(MACHINE)
+CALIBRATE_6060 = qa_calibrate.makeChecklist(MACHINE)
+
 CHECKLIST = {
     "name": "demo",
     "title": "Demo checklist",
@@ -357,7 +362,7 @@ class AnswerTests(RunnerTestCase):
         self.assertIn(qaRunner.BODY + "    " + command, self.text().splitlines())
 
     def testChecklistsUseSteps(self):
-        for checklist in (qa_jog.CHECKLIST, qa_calibrate.CHECKLIST):
+        for checklist in (JOG_6060, CALIBRATE_6060):
             for _, item in qaRunner.flatten(checklist):
                 self.assertTrue("steps" in item or "auto" in item, item["id"])
 
@@ -372,7 +377,7 @@ class AnswerTests(RunnerTestCase):
         self.assertIn("Y1 refers to an unknown item [[NOPE]]", qaRunner.checklistProblems(bad))
 
     def testStepNumbersAreStable(self):
-        numbers = qaRunner.numberSteps(qa_jog.CHECKLIST)
+        numbers = qaRunner.numberSteps(JOG_6060)
         self.assertEqual(numbers[("opening", 0)], 1)
         self.assertEqual(numbers[("intro", 0)], 2)
         self.assertEqual(sorted(numbers.values()), list(range(1, len(numbers) + 1)))
@@ -977,7 +982,7 @@ class StyleTests(RunnerTestCase):
                                if key in step} for step in qaRunner.steps(item)] \
                 or [{"do": "Checked for you."}]
             return plain
-        for real in (qa_jog.CHECKLIST, qa_calibrate.CHECKLIST):
+        for real in (JOG_6060, CALIBRATE_6060):
             program = real["program"]
             checklist = {key: value for key, value in real.items() if key != "intro"}
             checklist["sections"] = [
@@ -1176,45 +1181,49 @@ class CalibrateEvidenceTests(unittest.TestCase):
         patcher = mock.patch.object(qa_calibrate, "REPO", self.repo)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.machine = "Test Machine"
+        self.profile = qa_calibrate.profilePath(self.machine)
+        self.sidecar = qa_calibrate.sidecarPath(self.machine)
 
     def write(self, relative, data):
         with open(os.path.join(self.repo, relative), "w", encoding="utf-8") as file:
             json.dump(data, file)
 
     def testCalibratedToday(self):
-        self.write(qa_calibrate.PROFILE, {"calibratedOn": "2020-01-01"})
-        self.assertFalse(qa_calibrate.calibratedToday()[0])
-        self.write(qa_calibrate.PROFILE, {"calibratedOn": qa_calibrate.today()})
-        self.assertTrue(qa_calibrate.calibratedToday()[0])
+        self.write(self.profile, {"calibratedOn": "2020-01-01"})
+        self.assertFalse(qa_calibrate.calibratedToday(self.machine)()[0])
+        self.write(self.profile, {"calibratedOn": qa_calibrate.today()})
+        self.assertTrue(qa_calibrate.calibratedToday(self.machine)()[0])
 
     def testPlateThicknessSaved(self):
-        self.assertFalse(qa_calibrate.plateThicknessSaved()[0])   # no sidecar yet
-        self.write(qa_calibrate.SIDECAR, {"plateThickness": qa_calibrate.PLATE})
-        self.assertTrue(qa_calibrate.plateThicknessSaved()[0])
+        self.assertFalse(qa_calibrate.plateThicknessSaved(self.machine)()[0])   # no sidecar yet
+        self.write(self.sidecar, {"plateThickness": qa_calibrate.PLATE})
+        self.assertTrue(qa_calibrate.plateThicknessSaved(self.machine)()[0])
 
     def testSpoilboardRecorded(self):
-        check = qa_calibrate.spoilboardRecorded("jog")
-        self.write(qa_calibrate.SIDECAR, {"spoilboard": {"measuredBy": "probe",
+        check = qa_calibrate.spoilboardRecorded(self.machine, "jog")
+        self.write(self.sidecar, {"spoilboard": {"measuredBy": "probe",
                                                          "measuredOn": qa_calibrate.today()}})
         self.assertFalse(check()[0])
-        self.write(qa_calibrate.SIDECAR, {"spoilboard": {"measuredBy": "jog", "zLimit": 108.5,
+        self.write(self.sidecar, {"spoilboard": {"measuredBy": "jog", "zLimit": 108.5,
                                                          "measuredOn": qa_calibrate.today()}})
-        self.write(qa_calibrate.PROFILE, {"expectedSettings": {"$132": "108.500"}})
+        self.write(self.profile, {"expectedSettings": {"$132": "108.500"}})
         done, message = check()
         self.assertTrue(done)
         self.assertIn("108.500", message)
 
     def testControllerPort(self):
-        self.write(qa_calibrate.PROFILE, {"portDeviceName": os.path.join(self.repo, "tty")})
-        self.assertFalse(qa_calibrate.controllerConnected()[0])
+        self.write(self.profile, {"portDeviceName": os.path.join(self.repo, "tty")})
+        self.assertFalse(qa_calibrate.controllerConnected(self.machine)()[0])
         open(os.path.join(self.repo, "tty"), "w").close()
-        self.assertTrue(qa_calibrate.controllerConnected()[0])
+        self.assertTrue(qa_calibrate.controllerConnected(self.machine)()[0])
 
     def testProfileUnchanged(self):
+        self.write(self.profile, {"calibratedOn": "2020-01-01"})
         with mock.patch.object(evidence, "gitClean", return_value=(True, "")):
-            self.assertEqual(qa_calibrate.profileUnchanged()[0], qaRunner.PASS)
+            self.assertEqual(qa_calibrate.profileUnchanged(self.machine)()[0], qaRunner.PASS)
         with mock.patch.object(evidence, "gitClean", return_value=(False, " M profiles/x")):
-            result, note = qa_calibrate.profileUnchanged()
+            result, note = qa_calibrate.profileUnchanged(self.machine)()
             self.assertEqual(result, qaRunner.FAIL)
             self.assertIn("M profiles/x", note)
 
@@ -1278,7 +1287,7 @@ class MiscTests(unittest.TestCase):
 
 
 class ChecklistSanityTests(unittest.TestCase):
-    CHECKLISTS = (qa_jog.CHECKLIST, qa_calibrate.CHECKLIST)
+    CHECKLISTS = (JOG_6060, CALIBRATE_6060)
 
     def testBothChecklistsAreWellFormed(self):
         for checklist in self.CHECKLISTS:
@@ -1290,22 +1299,22 @@ class ChecklistSanityTests(unittest.TestCase):
                     self.assertTrue(item["title"].strip(), item["id"])
                     for step in qaRunner.steps(item):
                         self.assertTrue(qaRunner.text(step["do"]).strip(), item["id"])
-                self.assertEqual(checklist["machine"], "6060 ProverXL V1")
+                self.assertEqual(checklist["machine"], MACHINE)
 
     def testNamesAreDistinct(self):
-        self.assertNotEqual(qa_jog.CHECKLIST["name"], qa_calibrate.CHECKLIST["name"])
+        self.assertNotEqual(JOG_6060["name"], CALIBRATE_6060["name"])
 
     def testSections(self):
-        self.assertEqual([s["title"] for s in qa_jog.CHECKLIST["sections"]],
+        self.assertEqual([s["title"] for s in JOG_6060["sections"]],
                          ["Setup", "Hold-to-jog", "Taps", "Keyboard capture"])
-        self.assertEqual([s["title"] for s in qa_calibrate.CHECKLIST["sections"]],
+        self.assertEqual([s["title"] for s in CALIBRATE_6060["sections"]],
                          ["Before you start", "Full calibration", "Z limit (jog)",
                           "Z limit: power cycle and reset", "Z limit (jog, on the spoilboard)",
                           "Z limit (probe)"])
 
     def testJogOpeningSteps(self):
         # The intro: the console setup, then the two notes as one step.
-        intro = qa_jog.CHECKLIST["intro"]
+        intro = JOG_6060["intro"]
         self.assertEqual(len(intro), 2)
         self.assertEqual(intro[0]["do"],
                          evidence.consoleSteps("jog.py", qa_jog.REPO)[0]["do"])
@@ -1319,7 +1328,7 @@ class ChecklistSanityTests(unittest.TestCase):
         self.assertEqual(set(intro[1]), {"do"})
 
     def testJogH1IntroductionIsItsOwnStep(self):
-        h1 = [item for _, item in qaRunner.flatten(qa_jog.CHECKLIST) if item["id"] == "H1"][0]
+        h1 = [item for _, item in qaRunner.flatten(JOG_6060) if item["id"] == "H1"][0]
         first, second = h1["steps"]
         self.assertEqual(set(first), {"do"})   # the introduction only
         self.assertTrue(first["do"].startswith("Holding a key jogs until you let go."))
@@ -1329,7 +1338,7 @@ class ChecklistSanityTests(unittest.TestCase):
         self.assertEqual(second["run"], qa_jog.JOG)
 
     def testProbeItemsAreMarked(self):
-        probe = [s for s in qa_calibrate.CHECKLIST["sections"] if s["title"] == "Z limit (probe)"][0]
+        probe = [s for s in CALIBRATE_6060["sections"] if s["title"] == "Z limit (probe)"][0]
         self.assertIn("probe plate", probe["needs"].lower())
         for item in probe["items"]:
             self.assertIn("probe plate", item.get("needs", "").lower(), item["id"])
@@ -1337,20 +1346,28 @@ class ChecklistSanityTests(unittest.TestCase):
     def testCommandsUseRealOptions(self):
         # Every option named in a command exists in the program's argparse setup.
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Each command is checked against the program it runs (qa_jog.py's own
+        # options are qaRunner.main's).
+        programs = {"python jog.py": "jog.py", "python calibrate.py": "calibrate.py",
+                    "python3 qa/qa_jog.py": "qa/qaRunner.py"}
         sources = {}
-        for program in ("jog.py", "calibrate.py"):
+        for start, program in programs.items():
             with open(os.path.join(root, program), encoding="utf-8") as file:
-                sources[program] = file.read()
+                sources[start] = file.read()
+        checked = set()
         for checklist in self.CHECKLISTS:
             for _, item in qaRunner.flatten(checklist):
-                command = " ".join(step.get("run") or "" for step in qaRunner.steps(item))
-                for program in sources:
-                    if f"python {program}" not in command:
-                        continue
-                    for part in command.split():
-                        if part.startswith("--"):
-                            with self.subTest(item=item["id"], option=part):
-                                self.assertIn(f'"{part}"', sources[program])
+                for step in qaRunner.steps(item):
+                    command = qaRunner.text(step.get("run")) or ""
+                    for start in sources:
+                        if not command.startswith(start + " "):
+                            continue
+                        checked.add(start)
+                        for part in command.split():
+                            if part.startswith("--"):
+                                with self.subTest(item=item["id"], option=part):
+                                    self.assertIn(f'"{part}"', sources[start])
+        self.assertEqual(checked, set(programs))
 
 
 class CheckedForYouTests(RunnerTestCase):
@@ -1386,13 +1403,13 @@ class CheckedForYouTests(RunnerTestCase):
                                  listed=lambda: inPlace, inGroupNow=lambda: inPlace), \
                 mock.patch.object(evidence, "secondConsoleIn",
                                   lambda directory: (inPlace, "Seen.")):
-            return self.runReal(qa_jog.CHECKLIST)
+            return self.runReal(JOG_6060)
 
     def testNoOldPrefixOnAnyScreenOfEitherChecklist(self):
         runs = [("qa_jog.py in place", self.jogScreens(True)),
                 ("qa_jog.py not in place", self.jogScreens(False))]
         with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")):
-            runs.append(("qa_calibrate.py", self.runReal(qa_calibrate.CHECKLIST)))
+            runs.append(("qa_calibrate.py", self.runReal(CALIBRATE_6060)))
         for name, screens in runs:
             text = "\n".join("\n".join(screen) for screen in screens)
             for old in ("Already done:", "Not needed:"):
@@ -1423,7 +1440,7 @@ class CheckedForYouTests(RunnerTestCase):
                                  inGroupNow=lambda: False), \
                 mock.patch.object(evidence, "secondConsoleIn",
                                   lambda directory: (True, "Seen.")):
-            notYet = self.screenOf(self.runReal(qa_jog.CHECKLIST), "(qa_jog.py) S14:")
+            notYet = self.screenOf(self.runReal(JOG_6060), "(qa_jog.py) S14:")
         self.assertIn("Please log out and back in now", notYet)
         self.assertIn("python3 qa/qa_jog.py", notYet)
 
@@ -1433,7 +1450,7 @@ class CheckedForYouTests(RunnerTestCase):
             self.jogScreens(inPlace)
             runs.append(("qa_jog.py", self.seen))
         with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")):
-            self.runReal(qa_calibrate.CHECKLIST)
+            self.runReal(CALIBRATE_6060)
         runs.append(("qa_calibrate.py", self.seen))
         for name, seen in runs:
             self.assertGreater(len(seen), 20, name)
@@ -1444,8 +1461,8 @@ class CheckedForYouTests(RunnerTestCase):
 
     def testControllerStepSaysItsChecked(self):
         with mock.patch.object(evidence, "secondConsoleIn", lambda directory: (True, "Seen.")), \
-                mock.patch.object(qa_calibrate, "port", lambda: os.devnull):
-            screens = self.runReal(qa_calibrate.CHECKLIST)
+                mock.patch.object(qa_calibrate, "port", lambda machine: os.devnull):
+            screens = self.runReal(CALIBRATE_6060)
         text = "\n".join(" ".join(line.strip() for line in screen) for screen in screens)
         self.assertIn("Checked for you: I can see the controller's port", text)
         self.assertNotIn("Please plug in the controller's USB cable", text)

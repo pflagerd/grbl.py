@@ -48,6 +48,12 @@ to answer it without asking.  "expect" may be a function too.  The checklist's
 resume (with their checks, so a console still open is not asked for twice).  In any text, "\n"
 starts a new line, and a line that starts with spaces is shown as it is, so
 commands can be listed one per line.  See qa_jog.py.
+
+A checklist for the real machine is built for one machine: qa_jog.py and
+qa_calibrate.py each have makeChecklist(machine), which takes the numbers
+from that machine's profile, profiles/<machine>.json.  main() takes that
+function, and --machine NAME picks the machine; without it, a menu of the
+profiles asks (see chooseMachine).
 """
 
 import argparse
@@ -500,10 +506,126 @@ def summaryLines(checklist, session):
 
 
 # ---------------------------------------------------------------------------
+# Machines: which profile a checklist is for
+# ---------------------------------------------------------------------------
+
+PROFILES_DIR = os.path.join(REPO_DIR, "profiles")
+# Files in profiles/ that sit beside a profile but aren't one.
+SIDECAR_SUFFIXES = (".machine.json", ".zlimit.json")
+AXES = ("X", "Y", "Z")
+AXIS_BITS = {"X": 1, "Y": 2, "Z": 4}   # $23: a set bit homes that axis toward negative
+NEW_MACHINE = "New machine (no profile yet)"
+
+
+def readProfile(machine, profilesDir=PROFILES_DIR):
+    """profiles/<machine>.json as a dict, or None if there is no such profile."""
+    try:
+        with open(os.path.join(profilesDir, f"{machine}.json"), encoding="utf-8") as file:
+            profile = json.load(file)
+    except (OSError, ValueError):
+        return None
+    return profile if isinstance(profile, dict) else None
+
+
+def profileNames(profilesDir=PROFILES_DIR):
+    """The machines that have a profile in profiles/, sorted.  A profile is
+    <name>.json written by calibrate.py; sidecars (<name>.machine.json,
+    <name>.zlimit.json) and other files there (bits.json) are left out."""
+    names = []
+    for path in glob.glob(os.path.join(profilesDir, "*.json")):
+        filename = os.path.basename(path)
+        if filename.endswith(SIDECAR_SUFFIXES):
+            continue
+        name = filename[:-len(".json")]
+        profile = readProfile(name, profilesDir)
+        if profile is not None and "workAreaX" in profile:
+            names.append(name)
+    return sorted(names)
+
+
+def homeMPos(profile):
+    """Where the machine sits after homing, {"X": mm, ...}, from the profile.
+
+    Stock Grbl 1.1h (HOMING_FORCE_SET_ORIGIN off) ends homing at
+        -max travel + pull-off   on an axis that homes toward negative ($23 bit set)
+        -pull-off                on an axis that homes toward positive ($23 bit clear)
+    (jog.py's softLimitBounds has the same rule).  Max travel is workArea*
+    ($130-$132), the pull-off is pullOff ($27) and $23 is homingPosition."""
+    mask = int(float(profile.get("homingPosition", "3")))
+    pullOff = float(profile.get("pullOff", 1.0))
+    return {axis: (-float(profile[f"workArea{axis}"]) + pullOff
+                   if mask & AXIS_BITS[axis] else -pullOff) for axis in AXES}
+
+
+def awayFromHome(profile):
+    """{"X": +1 or -1, ...}: the direction that moves an axis away from its
+    home switch (+1 on an axis that homes toward negative)."""
+    mask = int(float(profile.get("homingPosition", "3")))
+    return {axis: 1 if mask & AXIS_BITS[axis] else -1 for axis in AXES}
+
+
+def mposText(position):
+    """{"X": -397, "Y": -297, "Z": -3} as Grbl-style "X-397.000 Y-297.000 Z-3.000"."""
+    return " ".join(f"{axis}{position[axis]:.3f}" for axis in AXES)
+
+
+def chooseMachine(names, offerNew=False, ask=input, out=print):
+    """Ask which machine this run is for: a numbered menu of the profiles, plus
+    a new machine when offerNew.  Returns its name, or None if the operator
+    quits (q, Esc, end of input or Ctrl-C) or there is nothing to choose."""
+    choices = list(names) + ([NEW_MACHINE] if offerNew else [])
+    if not choices:
+        return None
+    out("")
+    out("Which machine is this for? " + ("These have a profile in profiles/:" if names else
+                                         "No machine has a profile in profiles/ yet."))
+    out("")
+    for number, choice in enumerate(choices, 1):
+        out(f"    {number}  {choice}")
+    try:
+        while True:
+            out("")
+            numbers = "1" if len(choices) == 1 else f"1-{len(choices)}"
+            answer = ask(f"Type its number ({numbers}), or q to quit: ").strip()
+            if answer.lower() in ("q", "quit", ESC):
+                return None
+            if not (answer.isdigit() and 1 <= int(answer) <= len(choices)):
+                out(f"Please type a number from 1 to {len(choices)}.")
+                continue
+            choice = choices[int(answer) - 1]
+            if choice != NEW_MACHINE:
+                return choice
+            while True:
+                out("")
+                name = ask("The new machine's name (calibrate.py saves its profile as "
+                           "profiles/<name>.json): ").strip()
+                if name.lower() in ("q", "quit", ESC):
+                    return None
+                if name and os.sep not in name and not name.startswith("."):
+                    return name
+                out("Please type a name, without a / and not starting with a dot.")
+    except (EOFError, KeyboardInterrupt):
+        out("")
+        return None
+
+
+def recordedNote(itemId):
+    """The note recorded so far for item itemId in the session being run, or
+    "" (for checklist text that shows an earlier answer, such as qa_calibrate's
+    C12 showing the settings noted in P2)."""
+    runner = Runner.current
+    if runner is None or runner.session is None:
+        return ""
+    return (runner.session.get("answers", {}).get(itemId) or {}).get("note") or ""
+
+
+# ---------------------------------------------------------------------------
 # The interactive loop
 # ---------------------------------------------------------------------------
 
 class Runner:
+    current = None   # the Runner whose run() is in progress (see recordedNote)
+
     def __init__(self, checklist, resultsDir=DEFAULT_RESULTS_DIR, machine=None, commit=None,
                  ask=None, out=print, clock=datetime.datetime.now, offerResume=True,
                  styled=None):
@@ -1082,6 +1204,7 @@ class Runner:
 
     def run(self):
         """Run the checklist.  Returns the session dict."""
+        Runner.current = self
         try:
             # A fresh screen to start with; after that, each step clears the
             # screen once the operator has answered the one before (see
@@ -1133,14 +1256,43 @@ class Runner:
         return self.session
 
 
-def main(checklist, argv=None):
-    parser = argparse.ArgumentParser(description=f"Manual QA: {checklist['title']}")
-    parser.add_argument("--machine", default=checklist.get("machine", ""),
-                        help="machine profile name recorded in the results (default: %(default)s)")
+def main(checklist, argv=None, title=None, offerNew=False, ask=input, out=print,
+         profilesDir=PROFILES_DIR):
+    """Run a checklist from the command line.
+
+    checklist is a checklist dict, or a function that builds one for a machine
+    name.  With a function, --machine NAME picks the machine, and without it a
+    menu of the profiles in profiles/ asks (offerNew adds a new machine to the
+    menu); title is then the checklist's title, for --help.  The function may
+    refuse a machine with sys.exit("why")."""
+    build = None if isinstance(checklist, dict) else checklist
+    title = checklist["title"] if build is None else title or "checklist"
+    parser = argparse.ArgumentParser(description=f"Manual QA: {title}")
+    if build is None:
+        parser.add_argument("--machine", default=checklist.get("machine", ""),
+                            help="machine profile name recorded in the results "
+                                 "(default: %(default)s)")
+    else:
+        parser.add_argument("--machine", metavar="NAME",
+                            help="the machine, as in profiles/NAME.json (default: choose "
+                                 "from a menu of the profiles)")
     parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR,
                         help="where results are saved (default: qa/results)")
     parser.add_argument("--new", action="store_true",
                         help="start a new session without offering to resume an unfinished one")
     arguments = parser.parse_args(argv)
+    if build is not None:
+        machine = arguments.machine
+        if not machine:
+            names = profileNames(profilesDir)
+            if not names and not offerNew:
+                sys.exit(f"No machine has a profile in {shortPath(profilesDir)} yet. Please "
+                         "calibrate it first: python calibrate.py \"NAME\" (or python3 "
+                         "qa/qa_calibrate.py).")
+            machine = chooseMachine(names, offerNew=offerNew, ask=ask, out=out)
+            if machine is None:
+                sys.exit("No machine chosen; nothing was started.")
+        checklist = build(machine)
+        arguments.machine = machine
     Runner(checklist, resultsDir=arguments.results_dir, machine=arguments.machine,
            offerResume=not arguments.new).run()
