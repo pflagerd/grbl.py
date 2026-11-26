@@ -86,7 +86,10 @@ FIRST_NEEDS_PROMPT = "Press Enter to do these tests, s to skip them all (or q or
 CHECKLIST_KEYS = ("name", "title", "program", "purpose", "machine", "intro", "sections")
 ITEM_KEYS = ("id", "title", "where", "steps", "do", "command", "expect", "needs", "safety",
              "skipIf", "auto")
-STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again")
+STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again", "whenDone")
+# A step's "whenDone": fields that replace its own on the screen when its
+# "already" check finds it done (it then says so itself, so no "Already done").
+WHEN_DONE_KEYS = ("do", "run", "actions", "expect")
 # Terminal styling: the VT100/ANSI subset every Linux terminal supports, and
 # only on a real terminal (see useStyle), so piped output and tests stay plain.
 CLEAR = "\033[H\033[2J"      # home and clear the screen (scrollback is kept)
@@ -179,6 +182,17 @@ def checklistProblems(checklist):
                     if unknownStep:
                         problems.append(f"{itemId} step {number} has unknown keys "
                                         f"{sorted(unknownStep)}")
+                    if "whenDone" in step:
+                        whenDone = step["whenDone"]
+                        if not isinstance(whenDone, dict):
+                            problems.append(f"{itemId} step {number} whenDone isn't a dict")
+                        elif not step.get("already"):
+                            problems.append(f"{itemId} step {number} has whenDone but no "
+                                            f"already")
+                        elif set(whenDone) - set(WHEN_DONE_KEYS):
+                            extra = sorted(set(whenDone) - set(WHEN_DONE_KEYS))
+                            problems.append(f"{itemId} step {number} whenDone has unknown "
+                                            f"keys {extra}")
             elif not item.get("expect") and not item.get("auto") and not item.get("skipIf"):
                 problems.append(f"{itemId} has no expect")
             for value in [item.get("safety"), item.get("needs")] + [
@@ -801,8 +815,10 @@ class Runner:
         item's ID (see numberSteps).
         A step whose "already" check finds it done is still shown on a screen
         of its own, with "Already done: ..." above its text, and Enter moves on
-        without checking again.  After the last step there is no Enter (the
-        answer prompt follows) unless it has a check or enterAfterLast is set.
+        without checking again.  If the step has "whenDone", its fields replace
+        the step's own on that screen instead, with no "Already done" line.
+        After the last step there is no Enter (the answer prompt follows)
+        unless it has a check or enterAfterLast is set.
         only, if given, picks the steps to show (the rest keep their numbers).
 
         b at a step's prompt goes back to the step shown before it.  start and
@@ -831,10 +847,13 @@ class Runner:
                 header()   # the test's Needs and Safety notes, under the label
                 self.gap()
             first = False
-            if done:
-                self.say(f"Already done: {message}", BODY)
-                self.out("")
-            self.showStep(step)
+            if done and step.get("whenDone"):
+                self.showStep({**step, **step["whenDone"]})
+            else:
+                if done:
+                    self.say(f"Already done: {message}", BODY)
+                    self.out("")
+                self.showStep(step)
             # A step already done needs no check after Enter.
             check = None if done else (step.get("verify") or step.get("already"))
             if index == total - 1 and not check and not enterAfterLast:

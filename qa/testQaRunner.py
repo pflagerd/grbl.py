@@ -766,6 +766,67 @@ class EvidenceTests(unittest.TestCase):
                          f"cd {self.repo}")   # the real path when no shorter one is given
 
 
+class WhenDoneTests(RunnerTestCase):
+    """A step's "whenDone" text replaces its own when its check finds it done."""
+
+    REPO = qa_jog.REPO                  # the full path, as the operator's console has it
+    SHOWN = qaRunner.shortPath(REPO)
+
+    def consoleScreen(self, seen):
+        steps = evidence.consoleSteps("jog.py", self.REPO, self.SHOWN)
+        checklist = dict(CHECKLIST, program="jog.py", intro=steps)
+        with mock.patch.object(evidence, "secondConsoleIn",
+                               return_value=(seen, "Seen." if seen else "Not seen.")):
+            self.run_(["q"], checklist=checklist)
+        return self.text()
+
+    def testConsoleSeenSaysSo(self):
+        text = self.consoleScreen(True)
+        sentence = ("It appears that you have already opened a second console and set its "
+                    f"working directory to {self.REPO}, so all that remains is to have you "
+                    "check that the venv in that directory has been activated in that "
+                    "console. I can't check that from here, so please activate it if you "
+                    "haven't already:")
+        self.assertIn(sentence, " ".join(line.strip() for line in text.splitlines()))
+        self.assertIn("\n\n        source .venv/bin/activate\n\n", text)
+        self.assertNotIn("cd ", text)
+        self.assertIn("You should see: The prompt starts with (.venv).", text)
+        self.assertNotIn("Already done:", text)
+        self.assertNotIn("If you haven't done so already", text)
+        self.assertNotIn("Seen.", text)
+        self.assertEqual(self.script.prompts, [qaRunner.FIRST_CONTINUE_PROMPT])
+
+    def testConsoleNotSeenAsksForAll(self):
+        text = self.consoleScreen(False)
+        self.assertIn("If you haven't done so already, please open a second console window",
+                      text)
+        self.assertIn(f"\n\n        cd {self.SHOWN}\n        source .venv/bin/activate\n\n",
+                      text)
+        self.assertIn("You should see: The prompt starts with (.venv).", text)
+        self.assertNotIn("It appears that", text)
+        self.assertNotIn("Already done:", text)
+
+    def testWithoutWhenDoneStillSaysAlreadyDone(self):
+        checklist = dict(CHECKLIST, intro=[
+            {"do": "Please open it.", "already": lambda: (True, "It's open.")}])
+        self.run_(["q"], checklist=checklist)
+        self.assertIn("Already done: It's open.", self.text())
+
+    def testWhenDoneIsChecked(self):
+        def problems(whenDone, already=True):
+            step = {"do": "Please open it.", "whenDone": whenDone}
+            if already:
+                step["already"] = lambda: (True, "")
+            return qaRunner.checklistProblems({"name": "w", "title": "W", "sections": [
+                {"title": "S", "items": [{"id": "W1", "title": "w", "steps": [step]}]}]})
+        self.assertEqual(problems({"do": "It's open.", "run": "true"}), [])
+        self.assertEqual(problems("It's open."), ["W1 step 1 whenDone isn't a dict"])
+        self.assertEqual(problems({"do": "x"}, already=False),
+                         ["W1 step 1 has whenDone but no already"])
+        self.assertEqual(problems({"verify": "x"}),
+                         ["W1 step 1 whenDone has unknown keys ['verify']"])
+
+
 class StartingPointTests(unittest.TestCase):
     """qa_jog.py S4 says what is already set up as a good thing, not a problem."""
 
