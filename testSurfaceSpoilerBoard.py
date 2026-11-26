@@ -2042,6 +2042,182 @@ class ZeroDepthTests(FlowTestBase):
         self.assertNotIn(SKIM_NOTE, self.output)
 
 
+class FakeClock:
+    """clock(): seconds that move only when a test says so (advance())."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class FakeTerminal(io.StringIO):
+    """A stdout that says it is a terminal; every write is also logged in events."""
+
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    def isatty(self):
+        return True
+
+    def write(self, text):
+        self.events.append(('live', text))
+        return super().write(text)
+
+
+class ElapsedTimeTests(FlowTestBase):
+    """Each pass is timed from when its cutting G-code starts until it is Idle after its M5.
+
+    The fake clock moves only where a test says: CUT seconds while a pass's
+    M5 is sent (so every pass takes exactly CUT), and PAUSE / ROUTER_WAIT
+    while the operator answers the "Another pass" / "router ON" prompts.
+    """
+
+    CUT, PAUSE, ROUTER_WAIT = 754, 300, 600   # 12 min 34 s, 5 min, 10 min
+
+    def timedRun(self, script, liveStream=None, interruptSecondPass=False, manual=False,
+                 messageDuringPass=False):
+        clock = FakeClock()
+        grbl = FakeGrbl()
+        surfacing = None
+        events = []
+        write = grbl.write
+
+        def timedWrite(data):
+            if data == b"M5\n" and surfacing.cutting:
+                clock.advance(self.CUT)
+            if messageDuringPass and surfacing.cutting and b"G53 G1 Y" in data:
+                # A Grbl [MSG:] mid-pass, 5 s in: streamGcode() prints it
+                # while the live line is open.
+                messageDuringPass.pop()
+                clock.advance(5)
+                grbl.replies.append(b"[MSG:Caution: test]\r\n")
+            if interruptSecondPass and surfacing.passesDone == 1 and b"G53 G1 Y" in data:
+                clock.advance(45)
+                grbl.interruptAt = "G53 G1 Y"
+            return write(data)
+        grbl.write = timedWrite
+        operator = Operator(script)
+
+        def ask(prompt, inputStream=None):
+            if "Another pass" in prompt:
+                clock.advance(self.PAUSE)
+            if "Switch the router ON" in prompt:
+                clock.advance(self.ROUTER_WAIT)
+            return operator(prompt)
+
+        def out(text):
+            events.append(('out', text))
+            self.output.append(text)
+        if manual:
+            ssb.writeJsonAtomically(self.machinePath, {"schemaVersion": 1,
+                                                       "spindleControl": "manual"})
+        options = ssb.parseArguments(["--profile", self.profilePath, "--diameter", "35"])
+        surfacing = ssb.Surfacing(grbl, self.profile, self.profilePath, options, ask=ask, out=out,
+                                  runJog=fakeJog(grbl, [CORNER1, CORNER2, TOUCH]),
+                                  checkEnvironment=lambda out=print: jog.ENVIRONMENT_OK,
+                                  sleep=lambda seconds: None, clock=clock,
+                                  liveStream=liveStream(events) if liveStream else None)
+        with redirect_stdout(io.StringIO()):
+            if interruptSecondPass:
+                with self.assertRaises(KeyboardInterrupt):
+                    surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
+            else:
+                surfacing.runSafely(lambda: grbl.tryHomingCycle('3'))
+        self.assertEqual(operator.script, [], "not every scripted answer was used")
+        return surfacing, events
+
+    def doneLines(self):
+        return [line for line in self.output if line.startswith("  Pass ") and " done" in line]
+
+    def testPassDoneLineSaysHowLong(self):
+        surfacing, _ = self.timedRun(START + PARAMETERS + FIRST_PASS + [("Another pass", "s")]
+                                     + PARK + END)
+        [done] = self.doneLines()
+        self.assertTrue(done.startswith("  Pass 1 done in 12 min 34 s (estimated about "), done)
+        self.assertIn("): 0.300 mm removed in total.  The bit is up at clearance", done)
+        self.assertIn("  Cutting time: 12 min 34 s in 1 pass.", self.output)
+
+    def testTotalOverTwoPassesWithAPause(self):
+        surfacing, _ = self.timedRun(START + PARAMETERS + FIRST_PASS
+                                     + [("Another pass", "y"), ("Another pass", "s")] + PARK + END)
+        self.assertEqual([line.split(" (")[0] for line in self.doneLines()],
+                         ["  Pass 1 done in 12 min 34 s", "  Pass 2 done in 12 min 34 s"])
+        # 2 x 754 s cut; first cut to last = 754 + 300 (the answer) + 754.
+        total = ("  Cutting time: 25 min 08 s over 2 passes (30 min 08 s from the first cut to "
+                 "the last, including the pauses between passes).")
+        self.assertIn(total, self.output)
+        # Printed after the last pass's "done" line.
+        self.assertGreater(self.output.index(total), self.output.index(self.doneLines()[-1]))
+        self.assertEqual(len(surfacing.passTimes), 2)
+
+    def testManualRouterWaitIsNotCounted(self):
+        script = ([entry for entry in START] + ManualSpindleFlowTests.PARAMETERS + FIRST_PASS
+                  + [("Switch the router ON now, then press Enter", ""),
+                     ("Router ON? Another pass", "s"), ("Switch the router OFF now", "")] + END)
+        self.timedRun(script, manual=True)
+        [done] = self.doneLines()
+        self.assertTrue(done.startswith("  Pass 1 done in 12 min 34 s"), done)   # not 22 min 34 s
+
+    def testStoppedPassReportsElapsed(self):
+        self.timedRun(START + PARAMETERS + FIRST_PASS + [("Another pass", "y")],
+                      interruptSecondPass=True)
+        self.assertIn("!! Pass 2 was stopped after 0 min 45 s of cutting.", self.output)
+        self.assertIn("!! Cutting time: 13 min 19 s over 2 passes (18 min 19 s from the first cut "
+                      "to the last, including the pauses between passes).", self.output)
+        self.assertIn("feed hold (!)", self.text())   # the safety stop still ran
+
+    def testNoLiveLineWithoutATerminal(self):
+        # A log or a pipe (isatty() false) gets no live line; nor does no stream.
+        stream = io.StringIO()
+        self.timedRun(START + PARAMETERS + FIRST_PASS + [("Another pass", "s")] + PARK + END,
+                      liveStream=lambda events: stream)
+        self.assertEqual(stream.getvalue(), "")
+        self.assertFalse(any("Cutting pass" in line for line in self.output))
+
+    def testLiveLineOnATerminalIsClosedBeforeOtherOutput(self):
+        _, events = self.timedRun(START + PARAMETERS + FIRST_PASS + [("Another pass", "s")]
+                                  + PARK + END, liveStream=FakeTerminal, messageDuringPass=[1])
+        live = [text for kind, text in events if kind == 'live']
+        self.assertTrue(live[0].startswith("\r  Cutting pass 1: 0 min 00 s elapsed of about "),
+                        live[0])
+        # Not rewritten while the text is the same (the clock did not move).
+        self.assertEqual(sum(1 for text in live if "0 min 00 s elapsed" in text), 1)
+        # Every message after a live update comes after a newline that closes it.
+        open_ = False
+        for kind, text in events:
+            if kind == 'live':
+                open_ = not text.endswith("\n")
+            else:
+                self.assertFalse(open_, f"{text!r} printed on the end of the live line")
+        message = events.index(('out', "  Grbl: [MSG:Caution: test]"))
+        self.assertTrue(events[message - 2][1].startswith("\r  Cutting pass 1: 0 min 05 s"))
+        self.assertEqual(events[message - 1], ('live', "\n"))
+        done = next(i for i, (kind, text) in enumerate(events)
+                    if kind == 'out' and text.startswith("  Pass 1 done in"))
+        self.assertEqual(events[done - 1], ('live', "\n"))
+
+    def testLiveLineUnit(self):
+        events = []
+        terminal = FakeTerminal(events)
+        line = ssb.LiveLine(terminal)
+        line.show("  Cutting pass 1: 0 min 09 s elapsed of about 1 min 00 s")
+        line.show("  Cutting pass 1: 0 min 09 s elapsed of about 1 min 00 s")   # same: no write
+        line.show("  short")                                                     # padded over
+        line.finish()
+        line.finish()                                                            # nothing open
+        self.assertEqual(terminal.getvalue(),
+                         "\r  Cutting pass 1: 0 min 09 s elapsed of about 1 min 00 s"
+                         "\r  short" + " " * 49 + "\n")
+        self.assertFalse(ssb.LiveLine(io.StringIO()).enabled)
+        self.assertFalse(ssb.LiveLine(None).enabled)
+
+
 class DocstringTests(unittest.TestCase):
     def testPartsListNamesRealThings(self):
         # Each "name()" in the module docstring's parts list must exist.

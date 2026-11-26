@@ -43,6 +43,11 @@ The flow, with nothing moving before an Enter from you:
      from the front-left corner, front to back (--one-way: every line left to
      right); with --start back-right, from the back-right corner, back to
      front (--one-way: right to left).  The cutting (climb) is the same.
+     Each pass is timed from when its G-code starts (in manual mode, after
+     your "router ON" Enter) until its motion is done: a live "Cutting pass
+     N: ... elapsed" line in a terminal, then "Pass N done in ...".  After
+     the last pass, the total cutting time and the time from the first cut
+     to the last.  A stopped pass says how long it had cut.
   7. Spindle off, lift, park; offers calibrate.py's spoilboard Z limit,
      because the spoilboard top has moved.
 
@@ -65,6 +70,7 @@ The parts, kept separate so they can be tested without a machine:
     loadBits(), saveBits(), chooseBit() the bit list (profiles/bits.json)
     loadBoards(), saveBoards(), chooseBoard()   saved corners (profiles/boards.json)
     streamGcode(), waitForIdle(), safeStop()   talk to Grbl
+    LiveLine.show(), LiveLine.finish()  the updating "Cutting pass N" line
     Surfacing.run()                     the operator flow
     Surfacing.runSafely()               the same, with safeStop() on Ctrl-C or any error
 """
@@ -477,6 +483,46 @@ def overTheBoard(board, diameter):
 def formatDuration(seconds):
     minutes, seconds = divmod(int(round(seconds)), 60)
     return f"{minutes} min {seconds:02d} s"
+
+
+class LiveLine:
+    """One line that rewrites itself in place, for a terminal only.
+
+    "\r" (carriage return) moves the cursor back to the start of the line,
+    so the next write covers the old text; nothing scrolls.  That only works
+    on a terminal: in a log file or a pipe every update would pile up, so
+    when the stream is not a terminal (isatty() false, or no stream at all,
+    as in the tests) show() does nothing.
+
+    The line stays open (no newline) between updates, so anything else
+    printed then would land on the end of it.  finish() closes it with a
+    newline; Surfacing routes every message through finish() first.
+    """
+
+    def __init__(self, stream=None):
+        try:
+            self.enabled = stream is not None and stream.isatty()
+        except (AttributeError, ValueError):   # no isatty(), or a closed stream
+            self.enabled = False
+        self.stream = stream
+        self.width = 0          # length of the text now on the line; 0: no line open
+        self.text = None
+
+    def show(self, text):
+        # Called after every read from Grbl, often many times a second; the
+        # text changes once a second (whole seconds), so write only then.
+        if not self.enabled or (self.width and text == self.text):
+            return
+        # Pad with spaces to cover a longer previous text.
+        self.stream.write("\r" + text.ljust(self.width))
+        self.stream.flush()
+        self.width, self.text = len(text), text
+
+    def finish(self):
+        if self.width:
+            self.stream.write("\n")
+            self.stream.flush()
+            self.width = 0
 
 
 def describePassDepth(passDepth, totalAfter):
@@ -914,7 +960,7 @@ def stateOf(report):
     return state, substate
 
 
-def streamGcode(grbl, lines, timeout, out=print, clock=time.monotonic):
+def streamGcode(grbl, lines, timeout, out=print, clock=time.monotonic, tick=None):
     """Send each line and wait for its 'ok' before the next (send-response).
 
     Grbl answers 'ok' as soon as a line is parsed into its planner buffer (16
@@ -923,6 +969,10 @@ def streamGcode(grbl, lines, timeout, out=print, clock=time.monotonic):
     GrblController.send(), a silent read is NOT taken as an 'ok': a long line
     can sit behind a full planner for a minute or more.  timeout bounds the
     wait for one 'ok' (a sync command such as M5 waits for the whole queue).
+
+    tick(), if given, is called after every read: each 'ok', or each second
+    of silence (the read timeout is 1 s), so a live display can refresh
+    about once a second without a thread of its own.
     """
     original = grbl.timeout
     grbl.timeout = 1
@@ -932,6 +982,8 @@ def streamGcode(grbl, lines, timeout, out=print, clock=time.monotonic):
             deadline = clock() + timeout
             while True:
                 reply = grbl.readline()
+                if tick:
+                    tick()
                 if reply == b'':
                     if clock() > deadline:
                         raise MachineError(f"No 'ok' from Grbl within {timeout:.0f} s of line "
@@ -950,10 +1002,12 @@ def streamGcode(grbl, lines, timeout, out=print, clock=time.monotonic):
         grbl.timeout = original
 
 
-def waitForIdle(grbl, timeout, sleep=time.sleep, clock=time.monotonic):
+def waitForIdle(grbl, timeout, sleep=time.sleep, clock=time.monotonic, tick=None):
     deadline = clock() + timeout
     while True:
         state, _ = stateOf(readStatus(grbl))
+        if tick:
+            tick()    # as in streamGcode(): a live display refreshes between polls
         if state == 'Idle':
             return
         if state == 'Alarm':
@@ -1057,13 +1111,19 @@ class Surfacing:
     """The operator flow.  Everything that talks to people or the machine is injected."""
 
     def __init__(self, grbl, profile, profilePath, options, ask=None, out=print, runJog=None,
-                 checkEnvironment=None, sleep=time.sleep, clock=time.monotonic):
+                 checkEnvironment=None, sleep=time.sleep, clock=time.monotonic,
+                 liveStream=None):
         self.grbl = grbl
         self.profile = profile
         self.profilePath = profilePath
         self.options = options
         self.ask = ask or calibrate.readAnswer
-        self.out = out
+        # Every message goes through say(), which first closes a live
+        # "Cutting pass N" line (see LiveLine) so it can't land on the end of it.
+        # liveStream: where that line goes; main() gives sys.stdout.
+        self.live = LiveLine(liveStream)
+        self.rawOut = out
+        self.out = self.say
         self.runJog = runJog or jogModule.runKeyboardJog
         self.checkEnvironment = checkEnvironment or jogModule.checkJogEnvironment
         self.sleep = sleep
@@ -1083,6 +1143,13 @@ class Surfacing:
         self.spindleControl, self.spindleSource = SPINDLE_GRBL, None
         self.routerOn = False    # manual mode: the operator said the router is on
         self.homingStarted = False   # run() sets it just before $H
+        # Cutting time, per pass: (number, start, end, stopped), clock() seconds.
+        self.passTimes = []
+        self.cutting = None          # (number, start, estimate) while a pass cuts
+
+    def say(self, text):
+        self.live.finish()
+        self.rawOut(text)
 
     # --- parameters ---------------------------------------------------------
 
@@ -1496,7 +1563,46 @@ class Surfacing:
         waitForIdle(self.grbl, 60, self.sleep, self.clock)
         self.spindleOn = False
 
-    def runPass(self, plan):
+    # --- cutting time -------------------------------------------------------
+
+    def startCutting(self, number, estimate):
+        self.cutting = (number, self.clock(), estimate)
+
+    def showProgress(self):
+        """Called by streamGcode()/waitForIdle() after each read or status poll."""
+        if not self.cutting or not self.live.enabled:
+            return
+        number, start, estimate = self.cutting
+        self.live.show(f"  Cutting pass {number}: {formatDuration(self.clock() - start)} "
+                       f"elapsed of about {formatDuration(estimate)}")
+
+    def stopCutting(self, stopped=False):
+        """Ends the timing of the pass that is cutting; returns its seconds."""
+        number, start, _ = self.cutting
+        end = self.clock()
+        self.passTimes.append((number, start, end, stopped))
+        self.cutting = None
+        self.live.finish()
+        return end - start
+
+    def describeCuttingTime(self):
+        """The total line: the passes' own times, and first cut to last."""
+        cut = sum(end - start for _, start, end, _ in self.passTimes)
+        count = len(self.passTimes)
+        if count == 1:
+            return f"  Cutting time: {formatDuration(cut)} in 1 pass."
+        wall = self.passTimes[-1][2] - self.passTimes[0][1]
+        return (f"  Cutting time: {formatDuration(cut)} over {count} passes "
+                f"({formatDuration(wall)} from the first cut to the last, including the pauses "
+                "between passes).")
+
+    def runPass(self, plan, number=None):
+        """Cuts one pass; returns the seconds it took, timed from its first line.
+
+        In manual mode the wait for "Switch the router ON" is not counted:
+        the clock starts when the cutting G-code begins streaming.
+        """
+        number = number or self.passesDone + 1
         timeout = plan.seconds * 2 + 120
         self.out(f"  Cutting: {len(plan.gcode)} lines, about {formatDuration(plan.seconds)}.  "
                  "Ctrl-C stops it.")
@@ -1511,9 +1617,18 @@ class Surfacing:
             self.ask("Switch the router ON now, then press Enter. ")
             self.routerOn = True
             lines = lines[split:]
-        streamGcode(self.grbl, lines, timeout, self.out, self.clock)
-        waitForIdle(self.grbl, timeout, self.sleep, self.clock)   # Idle: the M5 has run
+        self.startCutting(number, plan.seconds)
+        try:
+            streamGcode(self.grbl, lines, timeout, self.out, self.clock, tick=self.showProgress)
+            # Idle: the M5 has run, so the pass's motion is finished.
+            waitForIdle(self.grbl, timeout, self.sleep, self.clock, tick=self.showProgress)
+        except BaseException:
+            # Ctrl-C, an alarm, an error: keep the time cut so far for the
+            # stop message in runSafely(), and for the total.
+            self.stopCutting(stopped=True)
+            raise
         self.spindleOn = False
+        return self.stopCutting()
 
     def askExtraPass(self, depth, mustChange=False):
         """After a pass.  Returns the next pass's depth, or None to stop.
@@ -1597,14 +1712,16 @@ class Surfacing:
             else:
                 self.out(f"  Pass {number}: {describePassDepth(depth, totalAfter)}, about "
                          f"{formatDuration(plan.seconds)}.")
-            self.runPass(plan)
+            seconds = self.runPass(plan, number)
             self.totalDepth = totalAfter
             self.passesDone += 1
             if depth > 0:
                 # The depth offered for saving with the bit: a 0 spring pass
                 # is not a depth per pass to start from next time.
                 self.lastDepth = depth
-            self.out(f"  Pass {number} done: {self.totalDepth:.3f} mm removed in total.  The bit is "
+            self.out(f"  Pass {number} done in {formatDuration(seconds)} (estimated about "
+                     f"{formatDuration(plan.seconds)}): {self.totalDepth:.3f} mm removed in total.  "
+                     "The bit is "
                      "up at clearance" + (" (the router is still running)." if self.manual
                                           else " and the spindle is stopped."))
             depth = self.askExtraPass(depth)
@@ -1631,6 +1748,8 @@ class Surfacing:
         waitForIdle(self.grbl, 300, self.sleep, self.clock)
 
     def finish(self):
+        if self.passTimes:
+            self.out(self.describeCuttingTime())
         self.park()
         self.out(f"\nTotal depth removed: {self.totalDepth:.3f} mm in {self.passesDone} "
                  f"pass{'es' if self.passesDone != 1 else ''}.")
@@ -1753,6 +1872,12 @@ class Surfacing:
                 raise   # stopped before anything could move; nothing to stop
             self.out(f"\n!! {type(error).__name__}: {error}" if str(error)
                      else f"\n!! {type(error).__name__}")
+            if self.passTimes and self.passTimes[-1][3]:
+                number, start, end, _ = self.passTimes[-1]
+                self.out(f"!! Pass {number} was stopped after {formatDuration(end - start)} "
+                         "of cutting.")
+                if len(self.passTimes) > 1:
+                    self.out("!!" + self.describeCuttingTime()[1:])
             safeStop(self.grbl, self.out, self.sleep, self.clock, manualSpindle=self.manual)
             if self.manual and self.routerOn:
                 self.out(ROUTER_STILL_RUNNING)
@@ -1865,7 +1990,7 @@ def main(argv=None):
     if profile.homingPosition != grbl.homingPosition:
         grbl.homingPosition = profile.homingPosition
         grbl.send('$23=' + profile.homingPosition)
-    surfacing = Surfacing(grbl, profile, arguments.profile, arguments)
+    surfacing = Surfacing(grbl, profile, arguments.profile, arguments, liveStream=sys.stdout)
     try:
         surfacing.runSafely(lambda: grbl.tryHomingCycle(profile.homingPosition))
     except KeyboardInterrupt:
