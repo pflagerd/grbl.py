@@ -763,6 +763,41 @@ class EvidenceTests(unittest.TestCase):
                          f"cd {self.repo}")   # the real path when no shorter one is given
 
 
+class StartingPointTests(unittest.TestCase):
+    """qa_jog.py S4 says what is already set up as a good thing, not a problem."""
+
+    def message(self, evdev, group, now=True):
+        with mock.patch.multiple(qa_jog, evdevInVenv=lambda: evdev, listed=lambda: group,
+                                 inGroupNow=lambda: now):
+            return qa_jog.startingPoint()
+
+    def testAllSetUp(self):
+        result, text = self.message(True, True)
+        self.assertEqual(result, qaRunner.SKIP)
+        self.assertIn("evdev is already installed in the venv and you're already listed in "
+                      "the 'input' group, so that setup is already done. That's why I'll "
+                      "skip the tests that check it.", text)
+
+    def testPartlySetUp(self):
+        self.assertIn("evdev is already installed in the venv, so that part of the setup is "
+                      "already done.", self.message(True, False)[1])
+        self.assertIn("You're already listed in the 'input' group (from your next login), so "
+                      "that part", self.message(False, True, now=False)[1])
+
+    def testNothingSetUp(self):
+        result, text = self.message(False, False)
+        self.assertEqual(result, qaRunner.PASS)
+        self.assertIn("so we'll test that setup.", text)
+
+    def testNoNegativeWording(self):
+        for case in ((True, True), (True, False), (False, True), (False, False)):
+            text = self.message(*case)[1]
+            self.assertTrue(text.startswith("The next tests check how jog.py helps you set "
+                                            "up keyboard jog. "))
+            self.assertNotIn("Not a clean starting point", text)
+            self.assertNotIn("They need", text)
+
+
 class StyleTests(RunnerTestCase):
     def checklist(self):
         return dict(CHECKLIST, program="demo.py", purpose="demo.py guides you.", sections=[
