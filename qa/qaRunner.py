@@ -585,7 +585,8 @@ def chooseMachine(names, offerNew=False, ask=input, out=print):
     try:
         while True:
             out("")
-            answer = ask(f"Type its number (1-{len(choices)}), or q to quit: ").strip()
+            numbers = "1" if len(choices) == 1 else f"1-{len(choices)}"
+            answer = ask(f"Type its number ({numbers}), or q to quit: ").strip()
             if answer.lower() in ("q", "quit", ESC):
                 return None
             if not (answer.isdigit() and 1 <= int(answer) <= len(choices)):
