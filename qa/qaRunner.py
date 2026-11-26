@@ -39,7 +39,8 @@ jog mode, where the keyboard is captured), and what to expect.  (An item may
 instead give do, command and expect itself: that is one step.)
 
 Checks are functions.  A step's "already" and "verify" return (done, message):
-"already" is asked before the step is shown (done: say so and skip it),
+"already" is asked before the step is shown (done: say "Checked for you: ..."
+and need no check; "whenDone" text instead, or no screen with "quietWhenDone"),
 "verify" after Enter (not done: say so, offer to check again).  An item's
 "skipIf" returns a reason to skip it, or None; "auto" returns (result, note)
 to answer it without asking.  "expect" may be a function too.  The checklist's
@@ -55,6 +56,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,23 +71,33 @@ QA_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(QA_DIR)
 DEFAULT_RESULTS_DIR = os.path.join(QA_DIR, "results")
 
-WIDTH = 78
+WIDTH = 78   # used only when not on a real terminal (tests, piped output)
 ITEM_PROMPT = "How did it go? [p]ass / [f]ail / [s]kip / [n]ote / [b]ack / [q]uit or Esc: "
 ITEM_HELP = ("p = pass, f = fail (asks what went wrong), s = skip (asks why), n = add a "
              "note first, b = back to the previous item, q or Esc = save and quit.")
 # At the very first prompt there is nothing to go back to, so b isn't offered.
 FIRST_ITEM_PROMPT = ITEM_PROMPT.replace("[b]ack / ", "")
 FIRST_ITEM_HELP = ITEM_HELP.replace("b = back to the previous item, ", "")
-SECTION_PROMPT = "Enter to start, [s]kip the whole section, [b]ack, [q]uit or Esc: "
-SECTION_HELP = ("Press Enter to start the section, s to skip it, b to go back, q or Esc to "
-                "quit.")
-FIRST_SECTION_PROMPT = SECTION_PROMPT.replace("[b]ack, ", "")
-FIRST_SECTION_HELP = SECTION_HELP.replace(" b to go back,", "")
+# Sections aren't shown to the operator.  A section with "needs" (a probe plate,
+# say) gets one step of its own, so its tests can be skipped all at once.
+NEEDS_PROMPT = ("Press Enter to do these tests, s to skip them all (b to go back, q or Esc "
+                "to quit). ")
+FIRST_NEEDS_PROMPT = "Press Enter to do these tests, s to skip them all (or q or Esc to quit). "
 
 CHECKLIST_KEYS = ("name", "title", "program", "purpose", "machine", "intro", "sections")
 ITEM_KEYS = ("id", "title", "where", "steps", "do", "command", "expect", "needs", "safety",
              "skipIf", "auto")
-STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again")
+STEP_KEYS = ("do", "run", "actions", "expect", "already", "verify", "again", "whenDone",
+             "quietWhenDone")
+# A step's "whenDone": fields that replace its own on the screen when its
+# "already" check finds it done (it then says so itself, so no "Checked for you").
+WHEN_DONE_KEYS = ("do", "run", "actions", "expect")
+# A step's "quietWhenDone": when its "already" check finds it done, the step
+# is passed over with no screen at all (the test before has just said so).
+
+# What every automatic check's result starts with on screen: a step's
+# "already", an item's "skipIf" and an item's "auto".
+CHECKED = "Checked for you: "
 # Terminal styling: the VT100/ANSI subset every Linux terminal supports, and
 # only on a real terminal (see useStyle), so piped output and tests stay plain.
 CLEAR = "\033[H\033[2J"      # home and clear the screen (scrollback is kept)
@@ -153,6 +165,9 @@ def checklistProblems(checklist):
             problems.append(f"{where} has no title")
         if not section.get("items"):
             problems.append(f"{where} has no items")
+        if section.get("intro") and not section.get("needs"):
+            problems.append(f"{where} has an intro, which isn't shown (sections aren't): "
+                            "put it in its first step")
         for item in section.get("items") or []:
             itemId = item.get("id")
             if not itemId:
@@ -175,6 +190,20 @@ def checklistProblems(checklist):
                     if unknownStep:
                         problems.append(f"{itemId} step {number} has unknown keys "
                                         f"{sorted(unknownStep)}")
+                    if step.get("quietWhenDone") and not step.get("already"):
+                        problems.append(f"{itemId} step {number} has quietWhenDone but no "
+                                        f"already")
+                    if "whenDone" in step:
+                        whenDone = step["whenDone"]
+                        if not isinstance(whenDone, dict):
+                            problems.append(f"{itemId} step {number} whenDone isn't a dict")
+                        elif not step.get("already"):
+                            problems.append(f"{itemId} step {number} has whenDone but no "
+                                            f"already")
+                        elif set(whenDone) - set(WHEN_DONE_KEYS):
+                            extra = sorted(set(whenDone) - set(WHEN_DONE_KEYS))
+                            problems.append(f"{itemId} step {number} whenDone has unknown "
+                                            f"keys {extra}")
             elif not item.get("expect") and not item.get("auto") and not item.get("skipIf"):
                 problems.append(f"{itemId} has no expect")
             for value in [item.get("safety"), item.get("needs")] + [
@@ -201,6 +230,11 @@ def steps(item):
     if not item.get("do") and not item.get("expect"):
         return []   # answered by its "auto" check
     return [{"do": item.get("do"), "run": item.get("command"), "expect": item.get("expect")}]
+
+
+def passedOver(step):
+    """Is this a step with "quietWhenDone" whose check finds it done?"""
+    return bool(step.get("quietWhenDone") and step["already"]()[0])
 
 
 def keyboardIsTerminal():
@@ -275,10 +309,14 @@ def numberSteps(checklist):
         for index in range(len(intro)):
             count += 1
             numbers[("intro", index)] = count
-    for _, item in flatten(checklist):
-        for index in range(max(1, len(steps(item)))):
-            count += 1
-            numbers[(item["id"], index)] = count
+    for sectionIndex, section in enumerate(checklist["sections"]):
+        if section.get("needs"):
+            count += 1                       # its "do these, or skip them all?" step
+            numbers[("needs", sectionIndex)] = count
+        for item in section["items"]:
+            for index in range(max(1, len(steps(item)))):
+                count += 1
+                numbers[(item["id"], index)] = count
     return numbers
 
 
@@ -496,7 +534,9 @@ class Runner:
     # -- input ------------------------------------------------------------
 
     def ask(self, prompt):
-        # Waits as long as it takes.  End of input and Ctrl-C mean quit.
+        # Waits as long as it takes.  End of input and Ctrl-C mean quit.  Every
+        # prompt has one empty line above it (gap() never doubles it).
+        self.gap()
         try:
             answer = (self.rawAsk or input)(prompt)
         except (EOFError, KeyboardInterrupt):
@@ -505,6 +545,13 @@ class Runner:
         self.answered = True
         self.atTop = self.lastBlank = False   # the prompt and answer are on screen
         return answer
+
+    def width(self):
+        """Columns to wrap to: the terminal's full width, asked for each time (so
+        resizing the window takes effect), or WIDTH when not on a terminal."""
+        if not self.styled:
+            return WIDTH
+        return max(40, shutil.get_terminal_size((WIDTH, 24)).columns)
 
     def out(self, line=""):
         self.rawOut(line)
@@ -553,7 +600,11 @@ class Runner:
         """A "Press Enter ..." prompt.  On a real terminal it reacts to one key,
         no Enter needed: Enter gives "", and any of keys gives that key (other
         keys are ignored).  Esc gives "q"; Ctrl-C and Ctrl-D quit.  Elsewhere (tests, piped
-        input) it reads a line as usual."""
+        input) it reads a line as usual.
+
+        Like every prompt, it has an empty line above it; gap() adds one only
+        if there isn't one already."""
+        self.gap()
         shown = self.promptStyle(prompt) if highlight else prompt
         if self.rawAsk is not None or not keyboardIsTerminal():
             return self.ask(shown).strip().lower()
@@ -605,7 +656,7 @@ class Runner:
                 continue
             # Style each wrapped line after wrapping: textwrap counts escape
             # codes as characters.  The indent stays unstyled.
-            for line in textwrap.wrap(paragraph, WIDTH - len(rest)):
+            for line in textwrap.wrap(paragraph, self.width() - len(rest)):
                 self.out(lead + (self.style(line, code) if code else line))
                 lead = rest
 
@@ -620,14 +671,17 @@ class Runner:
                 if line[:1].isspace() or not wrap:
                     self.out(start + line)
                 else:
-                    self.out(textwrap.fill(line, WIDTH, initial_indent=start,
+                    self.out(textwrap.fill(line, self.width(), initial_indent=start,
                                            subsequent_indent=indent) if line else "")
 
     # -- recording ----------------------------------------------------------
 
-    def record(self, item, result, note):
-        self.session["answers"][item["id"]] = {"result": result, "note": note.strip(),
-                                               "answered": stamp(self.clock())}
+    def record(self, item, result, note, by=None):
+        """by="check": answered by the item's skipIf / auto check, not the operator."""
+        answer = {"result": result, "note": note.strip(), "answered": stamp(self.clock())}
+        if by:
+            answer["by"] = by
+        self.session["answers"][item["id"]] = answer
         self.save()
 
     def save(self):
@@ -671,62 +725,65 @@ class Runner:
         indexes = [i for i, (s, _) in enumerate(self.items) if s is section]
         return indexes[0], indexes[-1] + 1
 
-    def sectionPrompt(self, index):
-        """Returns the next index: index (start), past the section (skipped), or index-1 (back)."""
+    def needsPrompt(self, index):
+        """The step before a section whose tests need something (a probe plate):
+        do them, or skip them all.  Returns index (do them), the index past the
+        section (skipped), or index - 1 (back)."""
         self.freshScreen()
         section = self.items[index][0]
-        number = self.checklist["sections"].index(section) + 1
+        sectionIndex = self.checklist["sections"].index(section)
         first, end = self.sectionRange(index)
         self.gap()
-        self.out("=" * WIDTH)
-        self.say(f"Section {number} of {len(self.checklist['sections'])}: {section['title']} "
-                 f"({end - first} item{'' if end - first == 1 else 's'})")
+        self.say(self.label("needs", sectionIndex), HEAD, LABEL)
+        self.out("")
         if section.get("intro"):
-            self.say(self.resolve(section["intro"]), "  ")
-        if section.get("needs"):
-            self.field("Needs", self.resolve(section["needs"]))
-        self.out("=" * WIDTH)
-        prompt, help_ = (FIRST_SECTION_PROMPT, FIRST_SECTION_HELP) if index == 0 else \
-            (SECTION_PROMPT, SECTION_HELP)
+            self.say(self.resolve(section["intro"]), BODY)
+            self.out("")
+        count = end - first
+        self.say(f"The next {count} test{'' if count == 1 else 's'} need"
+                 f"{'s' if count == 1 else ''}: {self.resolve(section['needs'])}", BODY)
+        self.out("")
+        back = index > 0 or self.hasOpening()
         while True:
-            key, note = self.choose(prompt, SECTION_WORDS,
-                                    ("s", "q") if index == 0 else ("s", "b", "q"))
+            key = self.askKey(BODY + (NEEDS_PROMPT if back else FIRST_NEEDS_PROMPT),
+                              ("s", "b", "q") if back else ("s", "q"))
             if key == "":
                 return index
-            if key == "q":
+            if key in ("q", "quit"):
                 raise Quit()
-            if key == "b" and index > 0:
+            if key in ("b", "back") and back:
                 return index - 1
-            if key == "s":
-                if not note:
-                    default = section.get("needs", "")
-                    hint = f" (Enter for \"section skipped: {default}\")" if default else \
-                        " (Enter for none)"
-                    note = self.ask(f"Why skip the section?{hint} ").strip()
-                    note = note or (f"section skipped: {default}" if default else "section skipped")
+            if key in ("s", "skip"):
+                default = f"skipped: needs {section['needs']}"
+                note = self.ask(BODY + f"Why skip them? (Enter for \"{default}\") ").strip()
+                note = note or default
                 moment = stamp(self.clock())
                 for _, item in self.items[first:end]:
                     if item["id"] not in self.session["answers"]:
                         self.session["answers"][item["id"]] = {"result": SKIP, "note": note,
                                                                "answered": moment}
                 self.save()
-                self.say(f"Skipped {section['title']}.")
+                self.say(f"Skipped those {count} tests.", BODY)
                 return end
-            self.say(help_)
 
     def showItem(self, index):
-        section, item = self.items[index]
-        self.gap()
-        self.out("-" * WIDTH)
-        self.say(f"{item['title']}   ({section['title']})")
-        self.field("Needs", self.resolve(item.get("needs")))
-        self.field("Safety", self.resolve(item.get("safety")))
+        """A test's notes, on every screen of it: Needs, Safety, where, and what
+        it was answered last time.  They go under the step's "S12:" label and its
+        empty line, at BODY like the step text (nothing is ever above the
+        label), and the caller leaves a gap after them.  No separator line and
+        no title: the operator goes by the S number, and the title is kept for
+        the results files."""
+        _, item = self.items[index]
+        self.field("Needs", self.resolve(item.get("needs")), margin=BODY)
+        self.field("Safety", self.resolve(item.get("safety")), margin=BODY)
         if item.get("where"):
-            self.say(item["where"], indent="  ")
+            self.say(item["where"], indent=BODY)
         previous = self.session["answers"].get(item["id"])
-        if previous:
+        # What the operator answered last time (not a check's own answer: its
+        # screen says what it found).
+        if previous and previous.get("by") != "check":
             note = f" ({previous['note']})" if previous.get("note") else ""
-            self.field("Answered", f"{previous['result']}{note}")
+            self.field("Answered", f"{previous['result']}{note}", margin=BODY)
 
     def resolve(self, value):
         return resolve(self.numbers, text(value))
@@ -754,13 +811,13 @@ class Runner:
             # start with spaces are quoted program output, shown as a block of
             # their own, further in, with an empty line before and after.
             first, *quoted = self.resolve(action).split("\n")
-            self.out(textwrap.fill(first, WIDTH, initial_indent=f"{BODY}  {number:>2}. ",
+            self.out(textwrap.fill(first, self.width(), initial_indent=f"{BODY}  {number:>2}. ",
                                    subsequent_indent=BODY + " " * 6))
             if quoted:
                 self.gap()
                 for line in quoted:
                     # A hanging indent, so a wrapped line still reads as one.
-                    self.out(textwrap.fill(line.strip(), WIDTH,
+                    self.out(textwrap.fill(line.strip(), self.width(),
                                            initial_indent=BODY + " " * 10,
                                            subsequent_indent=BODY + " " * 12))
                 self.out("")
@@ -775,13 +832,18 @@ class Runner:
         Every step starts with its number on a line of its own ("S12:", so it
         can be talked about), then an empty line.  owner is "intro" or the
         item's ID (see numberSteps).
-        A step whose "already" check finds it done gets one line saying so, and
-        is skipped.  After the last step there is no Enter (the answer prompt
-        follows) unless it has a check or enterAfterLast is set.  only, if
-        given, picks the steps to show (the rest keep their numbers).
+        A step whose "already" check finds it done is still shown on a screen
+        of its own, with "Checked for you: ..." above its text, and Enter moves
+        on without checking again.  If the step has "whenDone", its fields
+        replace the step's own on that screen instead, with no "Checked for
+        you" line.  If it has "quietWhenDone", it gets no screen at all: it is
+        passed over, going forward or back, and never asks for Enter.
+        After the last step there is no Enter (the answer prompt follows)
+        unless it has a check or enterAfterLast is set.
+        only, if given, picks the steps to show (the rest keep their numbers).
 
-        b at a step's prompt goes back to the step shown before it, shown in
-        full even if it is already done.  start and history pick up part-way
+        b at a step's prompt goes back to the step shown before it.  start and
+        history pick up part-way
         (history: the steps shown before start, in order).  From the first
         step, b returns BACK if canGoBack, so the caller can go further back.
         Otherwise returns the indexes of the steps shown, in order; the last
@@ -790,32 +852,42 @@ class Runner:
         total = len(stepList)
         history = list(history)
         index = start
-        revisit = start if (start or history) else None   # shown in full, done or not
+        first = True   # the first screen of this call shows header even if not fresh
+        goingBack = False
         while index < total:
             step = stepList[index]
             if only and not only(step):
                 index += 1
                 continue
             label = self.label(owner, index)
-            if step.get("already") and index != revisit:
-                done, message = step["already"]()
-                if done:
-                    # It opens the next screen, so it stays in view.
-                    if self.freshScreen() and header:
-                        header()
-                    self.gap()
-                    self.say(f"{label} already done. {message}", HEAD, rest=BODY)
-                    self.out("")   # a blank line after each report
-                    history.append(index)   # b can still go back to it, in full
+            done, message = step["already"]() if step.get("already") else (False, "")
+            if done and step.get("quietWhenDone"):   # see passedOver
+                # Passed over: on b, on to the step before it instead.
+                if goingBack and history:
+                    index = history.pop()
+                elif goingBack and canGoBack:
+                    return BACK
+                else:
                     index += 1
-                    continue
-            if self.freshScreen() and header:
-                header()   # the test's title and safety note, on every screen
+                continue
+            goingBack = False
+            fresh = self.freshScreen()
             self.gap()
             self.say(label, HEAD, LABEL)
             self.out("")
-            self.showStep(step)
-            check = step.get("verify") or step.get("already")
+            if header and (fresh or first):
+                header()   # the test's Needs and Safety notes, under the label
+                self.gap()
+            first = False
+            if done and step.get("whenDone"):
+                self.showStep({**step, **step["whenDone"]})
+            else:
+                if done:
+                    self.say(CHECKED + message, BODY)
+                    self.out("")
+                self.showStep(step)
+            # A step already done needs no check after Enter.
+            check = None if done else (step.get("verify") or step.get("already"))
             if index == total - 1 and not check and not enterAfterLast:
                 history.append(index)
                 return history
@@ -833,8 +905,8 @@ class Runner:
                 if answer in ("b", "back") and back and prompt != RECHECK_PROMPT:
                     if not history:
                         return BACK
-                    index = revisit = history.pop()
-                    wentBack = True
+                    index = history.pop()
+                    wentBack = goingBack = True
                     break
                 if not check or (answer == "c" and prompt == RECHECK_PROMPT):
                     break
@@ -859,22 +931,37 @@ class Runner:
         back from the next test, so start at this test's last step."""
         _, item = self.items[index]
         self.freshScreen()
-        self.showItem(index)
-        if item["id"] not in self.session["answers"]:
+        previous = self.session["answers"].get(item["id"])
+        # A test the operator hasn't answered (or one its own check answered
+        # before) is checked again; if the check settles it, it gets a screen of
+        # its own saying so, and Enter moves on.
+        if previous is None or previous.get("by") == "check":
+            checked = None
             reason = item["skipIf"]() if item.get("skipIf") else None
             if reason:
-                self.gap()
-                self.say(f"{self.label(item['id'], 0)} not needed. {reason} I've recorded "
-                         "this test as skipped.", HEAD, rest=BODY)
-                self.record(item, SKIP, reason)
-                return index + 1
-            if item.get("auto"):
-                result, note = item["auto"]()
-                self.gap()
+                checked = (SKIP, reason)
+            elif item.get("auto"):
+                checked = item["auto"]()
+            if checked:
+                result, note = checked
                 done = {PASS: "passed", FAIL: "failed", SKIP: "skipped"}[result]
-                self.say(f"{self.label(item['id'], 0)} checked for you. {note} I've recorded "
-                         f"this test as {done}.", HEAD, rest=BODY)
-                self.record(item, result, note)
+                self.gap()
+                self.say(self.label(item["id"], 0), HEAD, LABEL)
+                self.out("")
+                self.showItem(index)
+                self.gap()
+                self.say(CHECKED + note, BODY)
+                self.out("")
+                self.say(f"I've recorded this test as {done}.", BODY)
+                self.out("")
+                self.record(item, result, note, by="check")
+                back = index > 0 or self.hasOpening()
+                key = self.askKey(CONTINUE_PROMPT if back else FIRST_CONTINUE_PROMPT,
+                                  ("q", "b") if back else ("q",))
+                if key in ("q", "quit"):
+                    raise Quit()
+                if key in ("b", "back") and back:
+                    return index - 1
                 return index + 1
         stepList = steps(item)
         canGoBack = index > 0 or self.hasOpening()
@@ -883,9 +970,19 @@ class Runner:
             return self.runSteps(stepList, item["id"], header=lambda: self.showItem(index),
                                  start=start, history=history, canGoBack=canGoBack)
         if fromEnd and stepList:
-            shown = show(len(stepList) - 1, range(len(stepList) - 1))
-        else:
+            # Steps passed over (quietWhenDone) were never shown, so b skips them.
+            shown = show(len(stepList) - 1, [i for i in range(len(stepList) - 1)
+                                             if not passedOver(stepList[i])])
+        elif stepList:
             shown = show()
+        else:
+            # No steps (one answered by its check before): the label and notes.
+            self.gap()
+            self.say(self.label(item["id"], 0), HEAD, LABEL)
+            self.out("")
+            self.showItem(index)
+            self.gap()
+            shown = []
         if shown == BACK:
             return index - 1
         pending = ""
@@ -1009,8 +1106,9 @@ class Runner:
                     index, entering = 0, True
                     continue
                 if entering and self.isSectionStart(index) \
+                        and self.items[index][0].get("needs") \
                         and self.items[index][1]["id"] not in self.session["answers"]:
-                    nextIndex = self.sectionPrompt(index)
+                    nextIndex = self.needsPrompt(index)
                     if nextIndex != index:
                         entering = nextIndex > index
                         index = nextIndex

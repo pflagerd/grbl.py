@@ -115,26 +115,32 @@ JOG_MODE_STARTS = (
 
 
 def consoleSteps(program, repo, shown=None):
-    """The opening steps both checklists share: a second console, in the
-    repository root, with the venv active.  Marked "again": on resume they are
-    asked again, and their checks skip what is still in place."""
-    def open_():
-        return secondConsole()
-
+    """The opening step both checklists share: a second console, in the
+    repository root, with the venv active.  One step with both commands.  Its
+    check can see the console and where it is, but not the venv, so the text
+    asks for the venv either way; when it sees the console already in place,
+    its "whenDone" text says so and asks only for the venv.  Marked "again":
+    on resume it is asked again, and its check says when the console is still
+    in place."""
     def inRepo():
         return secondConsoleIn(repo)
 
     return [
         {"do": "If you haven't done so already, please open a second console window so "
-               f"we can test {program} there.",
-         "already": open_, "verify": open_, "again": True},
-        {"do": "In the second console, please go to the repository root:",
-         "run": f"cd {shown or repo}",
-         "already": inRepo, "verify": inRepo, "again": True},
-        {"do": "If you haven't already activated the venv in the second console please "
-               "activate it thus:",
-         "run": "source .venv/bin/activate",
-         "expect": "The prompt starts with (.venv).", "again": True},
+               f"we can test {program} there, go to the repository root, and activate "
+               "the venv (I can't check the venv from here, so please activate it if you "
+               "haven't already):",
+         "run": f"cd {shown or repo}\nsource .venv/bin/activate",
+         "expect": "The prompt starts with (.venv).",
+         "already": inRepo, "verify": inRepo, "again": True,
+         # When the console is seen already in place, say so instead.
+         "whenDone": {
+             "do": "It appears that you have already opened a second console and set its "
+                   f"working directory to {repo}, so all that remains is to have you check "
+                   "that the venv in that directory has been activated in that console. I "
+                   "can't check that from here, so please activate it if you haven't "
+                   "already:",
+             "run": "source .venv/bin/activate"}},
     ]
 
 

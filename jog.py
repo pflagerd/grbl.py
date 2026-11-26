@@ -36,6 +36,8 @@ machine:
     planStep()          pure: direction + step size + position + bounds -> one short $J line
     softLimitBounds()   pure: $130-$132, $23, $27 -> machine-coordinate box
     JogSession          drives a GrblController (send/write/getStatus)
+    formatPositionBlock()  pure: position + bounds -> the lines of the live display
+    PositionDisplay     redraws that block in place with VT100 codes
     runKeyboardJog()    the thin evdev part: find, grab, read, ungrab
     checkJogEnvironment()  finds a missing evdev / input-group access, offers fixes
 
@@ -52,6 +54,7 @@ import os
 import pwd
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -67,6 +70,7 @@ MINIMUM_MOVE = 0.001        # mm; an axis with less room than this is treated as
 CANCEL_TIMEOUT = 10.0       # s to wait for Grbl to leave Jog after a cancel
 POLL_INTERVAL = 0.2         # s between status polls while a jog runs
 STEP_FINISH_TIMEOUT = 60.0  # s to wait for queued tap steps to finish after Enter
+DISPLAY_INTERVAL = 0.1      # s between updates of the live position display
 
 # Tap-to-step (step 10).  Callers can override these (runKeyboardJog / JogKeyState),
 # and the JogKeyState defaults are read when it is created, so setting
@@ -381,6 +385,109 @@ def checkReadyToJog(grbl, settings, homed):
 
 
 # ---------------------------------------------------------------------------
+# The live position display
+# ---------------------------------------------------------------------------
+
+def formatMm(value):
+    text = f"{value:.3f}"
+    return "0.000" if text == "-0.000" else text
+
+
+def formatPositionBlock(position, bounds, state=None, message="", margin=LIMIT_MARGIN,
+                        width=78):
+    """The lines of the live display: for each axis the machine position, the
+    range jogs are kept inside, and how far it is to each end ("at limit" when
+    there is no room left to move that way).  position is {'X': mpos, ...} or
+    None (not read yet).  The message is cut to width, so it stays on one line
+    (a wrapped line would throw off the redraw).  Pure, so it can be tested on
+    its own."""
+    lines = [f"     {'Position':>10}  {'Low limit':>10}  {'High limit':>10}  "
+             f"{'To low':>9}  {'To high':>9}"]
+    for axis in AXES:
+        low, high = bounds[axis]
+        if position is None:
+            lines.append(f"  {axis}  {'-':>10}  {formatMm(low):>10}  {formatMm(high):>10}  "
+                         f"{'-':>9}  {'-':>9}")
+            continue
+        here = position[axis]
+        ends = []
+        for distance in (here - low, high - here):
+            ends.append("at limit" if distance - margin < MINIMUM_MOVE else formatMm(distance))
+        lines.append(f"  {axis}  {formatMm(here):>10}  {formatMm(low):>10}  "
+                     f"{formatMm(high):>10}  {ends[0]:>9}  {ends[1]:>9}")
+    lines.append(f"  State: {state or '-'}")
+    lines.append(f"  {message}"[:max(1, width - 1)])
+    return lines
+
+
+def terminalShowsDisplay(stream=None):
+    """The display needs a real terminal that understands VT100 cursor codes."""
+    stream = stream or sys.stdout
+    try:
+        tty = stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+    return tty and os.environ.get("TERM", "") not in ("", "dumb")
+
+
+class PositionDisplay:
+    """A fixed block of lines, redrawn in place while jogging.
+
+    Only basic VT100 codes: cursor up (ESC[nA), erase line (ESC[2K), and hide /
+    show the cursor (ESC[?25l / ESC[?25h).  Messages go on the block's last
+    line instead of being printed, so they never scroll the block away.
+    """
+
+    UP = "\x1b[{}A"
+    ERASE_LINE = "\x1b[2K"
+    HIDE_CURSOR = "\x1b[?25l"
+    SHOW_CURSOR = "\x1b[?25h"
+
+    def __init__(self, bounds, write=None, flush=None):
+        self.bounds = bounds
+        self.write = write or sys.stdout.write
+        self.flush = flush or sys.stdout.flush
+        self.position = None
+        self.state = None
+        self.text = ""
+        self.height = 0      # lines drawn so far (0: not drawn yet)
+        self.shown = None    # the lines last drawn, to skip redrawing the same
+
+    def start(self):
+        self.write(self.HIDE_CURSOR)
+        self.draw(force=True)
+
+    def update(self, position, state):
+        if position is not None:
+            self.position = position
+        self.state = state or self.state
+        self.draw()
+
+    def message(self, text):
+        self.text = text
+        self.draw()
+
+    def draw(self, force=False):
+        # The terminal's width, asked for each time, so a resized window is used in full.
+        width = shutil.get_terminal_size((80, 24)).columns
+        lines = formatPositionBlock(self.position, self.bounds, self.state, self.text,
+                                    width=width)
+        if lines == self.shown and not force:
+            return
+        if self.height:
+            self.write(self.UP.format(self.height))
+        for line in lines:
+            self.write("\r" + self.ERASE_LINE + line + "\n")
+        self.height = len(lines)
+        self.shown = lines
+        self.flush()
+
+    def close(self):
+        self.write(self.SHOW_CURSOR)
+        self.flush()
+
+
+# ---------------------------------------------------------------------------
 # Driver: commands -> GrblController calls
 # ---------------------------------------------------------------------------
 
@@ -413,6 +520,16 @@ class JogSession:
             if wpos and self.lastWco:
                 return {axis: wpos[axis] + self.lastWco[axis] for axis in AXES}
         raise JogError("Could not read the machine position from Grbl's status report.")
+
+    def status(self):
+        """(state, machine position or None) from one status report, for the
+        live display."""
+        state, mpos, wco, wpos = parseStatus(self.grbl.getStatus())
+        if wco:
+            self.lastWco = wco
+        if mpos is None and wpos and self.lastWco:
+            mpos = {axis: wpos[axis] + self.lastWco[axis] for axis in AXES}
+        return state, mpos
 
     def plannedPosition(self):
         # Where the next move starts from.  While tap steps are still running (Grbl
@@ -595,11 +712,14 @@ def waitForKeysReleased(keyboards, timeout=3.0):
 
 
 def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP_DIVISOR,
-                   out=print, holdThreshold=None):
+                   out=print, holdThreshold=None, showPosition=None):
     """Jog from the keyboard until Enter (returns ACCEPTED) or Esc (returns ABORTED).
 
     holdThreshold: seconds that tell a tap from a hold (default HOLD_THRESHOLD;
     0 turns tap-to-step off).
+
+    showPosition: show the live position display (see PositionDisplay).  The
+    default is to show it when printing to a real terminal.
 
     homed: whether $H has run since power-up; Grbl cannot tell us (see checkReadyToJog).
     Raises JogRefused, without moving anything, if jogging is not safe.
@@ -614,7 +734,12 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
 
     codeNames = {evdev.ecodes.ecodes[code]: name for code, name in EVDEV_KEY_NAMES.items()}
     keyState = JogKeyState(xyFeed, zFeed, creepDivisor, holdThreshold, clock=time.monotonic)
-    session = JogSession(grbl, bounds, out, sleep=time.sleep, clock=time.monotonic)
+    if showPosition is None:
+        showPosition = out is print and terminalShowsDisplay()
+    display = PositionDisplay(bounds) if showPosition else None
+    # With the display, jog messages go on its last line instead of scrolling it away.
+    session = JogSession(grbl, bounds, display.message if display else out,
+                         sleep=time.sleep, clock=time.monotonic)
 
     out(f"Jog mode: arrows X/Y, Shift+Up/Down Z. Tap to step {keyState.tapStep:g} mm "
         f"(Alt+tap {keyState.fineTapStep:g} mm), hold to jog; hold Ctrl to creep "
@@ -629,11 +754,13 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
             grabbed.append(device)
         if grbl.getGrblState() == 'Jog':
             session.cancel()  # a jog left over from before: stop it first
+        if display:
+            display.start()
         devicesByFd = {device.fd: device for device in keyboards}
-        lastPoll = time.monotonic()
+        lastPoll = lastDisplay = time.monotonic()
         while True:
             # Wake up in time to notice an arrow held past the hold threshold.
-            timeout = POLL_INTERVAL
+            timeout = DISPLAY_INTERVAL if display else POLL_INTERVAL
             deadline = keyState.nextDeadline()
             if deadline is not None:
                 timeout = max(0.0, min(timeout, deadline - time.monotonic()))
@@ -654,12 +781,25 @@ def runKeyboardJog(grbl, homed, xyFeed=XY_FEED, zFeed=Z_FEED, creepDivisor=CREEP
             if time.monotonic() - lastPoll >= POLL_INTERVAL:
                 session.poll()
                 lastPoll = time.monotonic()
+            if display and time.monotonic() - lastDisplay >= DISPLAY_INTERVAL:
+                display.update(*reversed(session.status()))
+                lastDisplay = time.monotonic()
     finally:
         # Stop the machine first, then give the keyboard back, whatever happened.
+        stopError = None
         try:
             session.stop()
         except Exception as error:  # still ungrab; report rather than mask the original error
-            out(f"Warning: jog-cancel after jog mode failed: {error}")
+            stopError = error
+        if display:
+            # Leave the block showing where it stopped, and the cursor back on.
+            try:
+                display.update(*reversed(session.status()))
+            except Exception:
+                pass
+            display.close()
+        if stopError is not None:
+            out(f"Warning: jog-cancel after jog mode failed: {stopError}")
         for device in grabbed:
             try:
                 device.ungrab()
@@ -785,6 +925,8 @@ def main():
     parser.add_argument("--z-feed", type=float, default=Z_FEED, help="mm/min")
     parser.add_argument("--hold-threshold", type=float, default=HOLD_THRESHOLD,
                         help="seconds; an arrow released sooner is a tap (one step), 0 turns taps off")
+    parser.add_argument("--no-position-display", action="store_true",
+                        help="don't show the live X/Y/Z position and limits while jogging")
     arguments = parser.parse_args()
 
     environment = checkJogEnvironment()
@@ -804,7 +946,8 @@ def main():
 
     try:
         result = runKeyboardJog(grbl, homed, xyFeed=arguments.xy_feed, zFeed=arguments.z_feed,
-                                holdThreshold=arguments.hold_threshold)
+                                holdThreshold=arguments.hold_threshold,
+                                showPosition=False if arguments.no_position_display else None)
     except JogRefused as refusal:
         sys.exit(f"Not jogging: {refusal}")
     position = grbl.getMachineCoordinates()
