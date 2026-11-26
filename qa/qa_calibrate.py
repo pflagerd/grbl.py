@@ -383,7 +383,6 @@ CHECKLIST = {
                 {
                     "id": "ZJ2",
                     "title": "Start the jog method",
-                    "safety": "The machine homes.",
                     "steps": [
                         start(Z_LIMIT_JOG, "\"=== Z limit ($132) ===\" with no jog-setup "
                               "messages, \"Method: jog (from the command line)\", and "

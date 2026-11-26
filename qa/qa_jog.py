@@ -208,7 +208,6 @@ CHECKLIST = {
                     "skipIf": lambda: (None if listed() else
                                        "You aren't listed in the 'input' group, so keyboard "
                                        "jog can't work yet."),
-                    "safety": "The machine homes.",
                     "steps": [
                         {"do": "Please log out and back in now, so the 'input' group "
                                "takes effect. Your answers so far are saved. Afterwards, "

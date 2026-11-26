@@ -12,6 +12,7 @@ import datetime
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -25,6 +26,8 @@ import evidence  # noqa: E402
 import qaRunner  # noqa: E402
 import qa_calibrate  # noqa: E402
 import qa_jog  # noqa: E402
+
+BODY_ = qaRunner.BODY
 
 CHECKLIST = {
     "name": "demo",
@@ -835,7 +838,7 @@ class StyleTests(RunnerTestCase):
         # a later step of a test repeats the test's safety note.
         second = screenWith("(demo.py) S4:")
         self.assertNotIn("(demo.py) S3:", second)
-        self.assertIn("  Safety: Hand near reset.", second)
+        self.assertIn("    Safety: Hand near reset.", second)
         # Nothing else is styled, prompts included.
         everything = "".join(line for line in out if line != qaRunner.CLEAR) + \
             "".join(self.script.prompts)
@@ -845,7 +848,7 @@ class StyleTests(RunnerTestCase):
 
     def testNoSeparatorOrTitleOnAnyScreen(self):
         # The operator goes by S numbers: no dashed line and no test title on
-        # any screen, but the Needs and Safety notes still sit above the step.
+        # any screen; the Needs and Safety notes sit under the S label.
         checklist = self.checklist()
         item = checklist["sections"][0]["items"][0]
         item.update(title="Unmistakable title", needs="A probe plate.",
@@ -858,9 +861,78 @@ class StyleTests(RunnerTestCase):
         starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR]
         for label in ("(demo.py) S2:", "(demo.py) S3:"):
             at = out.index(label)
-            screen = out[max(i for i in starts if i < at) + 1:at + 1]
-            self.assertEqual(screen, ["  Needs:  A probe plate.", "  Safety: Hand near reset.",
-                                      "", label])
+            screen = out[max(i for i in starts if i < at) + 1:at + 5]
+            self.assertEqual(screen, [label, "", "    Needs:  A probe plate.",
+                                      "    Safety: Hand near reset.", ""])
+
+    def testLabelIsAlwaysTheFirstLineOfAScreen(self):
+        # On every screen the "(prog) Sn:" label comes first, at the left edge,
+        # then an empty line; a test's Needs and Safety notes come after it,
+        # with a gap before the step text and never two empty lines in a row.
+        checklist = self.checklist()
+        item = checklist["sections"][0]["items"][0]
+        item.update(needs="A probe plate.", safety="Hand near reset.")
+        self.run_(["", "", "", "p", "q"], checklist=checklist, styled=True)
+        out = self.output
+        starts = [i for i, line in enumerate(out) if line == qaRunner.CLEAR] + [len(out)]
+        labelled = 0
+        for begin, end in zip(starts, starts[1:]):
+            screen = out[begin + 1:end]
+            lines = [line for line in screen if line.strip()]
+            if not lines or not re.match(r"\(demo\.py\) S\d+:$", lines[0]):
+                continue   # the results summary at the end has no step
+            labelled += 1
+            self.assertEqual(screen[0], lines[0])          # no blank line above it
+            self.assertEqual(screen[1], "")
+            for a, b in zip(screen, screen[1:]):
+                self.assertFalse(a == b == "", screen)
+            if any("Please st" in line for line in screen):   # one of the test's steps
+                self.assertEqual(screen[2:5], ["    Needs:  A probe plate.",
+                                               "    Safety: Hand near reset.", ""])
+        self.assertGreaterEqual(labelled, 3)
+
+    def testNotesFollowTheLabelInTheRealChecklists(self):
+        # Both real checklists, run through with every check left out (so
+        # nothing touches the machine) and every test passed: on each screen of
+        # a test with Needs or Safety, the label is the first line, then an
+        # empty line, then the notes.
+        def plainItem(item):
+            plain = {key: item[key] for key in ("id", "title", "needs", "safety", "where")
+                     if key in item}
+            plain["steps"] = [{key: step[key] for key in ("do", "run", "expect", "actions")
+                               if key in step} for step in qaRunner.steps(item)] \
+                or [{"do": "Checked for you."}]
+            return plain
+        for real in (qa_jog.CHECKLIST, qa_calibrate.CHECKLIST):
+            program = real["program"]
+            checklist = {key: value for key, value in real.items() if key != "intro"}
+            checklist["sections"] = [
+                {"title": section["title"], "items": [plainItem(i) for i in section["items"]]}
+                for section in real["sections"]]
+            answers = [""]   # S1
+            noted = 0
+            for _, item in qaRunner.flatten(checklist):
+                answers += [""] * (len(item["steps"]) - 1) + ["p"]
+                if item.get("needs") or item.get("safety"):
+                    noted += len(item["steps"])
+            self.run_(answers, checklist=checklist, styled=True)
+            self.assertIn(f"Pass {len(answers) - answers.count('')},", "\n".join(self.output))
+            text = "\n".join(self.output)
+            screens = [screen.strip("\n").split("\n")
+                       for screen in text.split(qaRunner.CLEAR) if screen.strip()]
+            seen = 0
+            for screen in screens:
+                if "All items answered." in screen:   # the results, after the last test
+                    screen = screen[:screen.index("All items answered.")]
+                where = (program, screen[:6])
+                self.assertRegex(screen[0], r"^\(%s\) S\d+:$" % re.escape(program), where)
+                self.assertEqual(screen[1], "", where)
+                notes = [i for i, line in enumerate(screen)
+                         if line.startswith((BODY_ + "Needs:", BODY_ + "Safety:"))]
+                if notes:
+                    seen += 1
+                    self.assertEqual(min(notes), 2, where)
+            self.assertEqual(seen, noted, program)
 
     def testWrapsToTheTerminalsFullWidth(self):
         checklist = self.checklist()

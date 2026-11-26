@@ -736,20 +736,21 @@ class Runner:
                 return end
 
     def showItem(self, index):
-        """The notes that sit above a test's steps, on every screen of it: Needs,
-        Safety, where, and what it was answered last time.  No separator line
-        and no title: the operator goes by the S number, and the title is kept
-        for the results files."""
+        """A test's notes, on every screen of it: Needs, Safety, where, and what
+        it was answered last time.  They go under the step's "S12:" label and its
+        empty line, at BODY like the step text (nothing is ever above the
+        label), and the caller leaves a gap after them.  No separator line and
+        no title: the operator goes by the S number, and the title is kept for
+        the results files."""
         _, item = self.items[index]
-        self.gap()
-        self.field("Needs", self.resolve(item.get("needs")))
-        self.field("Safety", self.resolve(item.get("safety")))
+        self.field("Needs", self.resolve(item.get("needs")), margin=BODY)
+        self.field("Safety", self.resolve(item.get("safety")), margin=BODY)
         if item.get("where"):
-            self.say(item["where"], indent="  ")
+            self.say(item["where"], indent=BODY)
         previous = self.session["answers"].get(item["id"])
         if previous:
             note = f" ({previous['note']})" if previous.get("note") else ""
-            self.field("Answered", f"{previous['result']}{note}")
+            self.field("Answered", f"{previous['result']}{note}", margin=BODY)
 
     def resolve(self, value):
         return resolve(self.numbers, text(value))
@@ -814,6 +815,7 @@ class Runner:
         total = len(stepList)
         history = list(history)
         index = start
+        first = True   # the first screen of this call shows header even if not fresh
         while index < total:
             step = stepList[index]
             if only and not only(step):
@@ -821,11 +823,14 @@ class Runner:
                 continue
             label = self.label(owner, index)
             done, message = step["already"]() if step.get("already") else (False, "")
-            if self.freshScreen() and header:
-                header()   # the test's Needs and Safety notes, on every screen
+            fresh = self.freshScreen()
             self.gap()
             self.say(label, HEAD, LABEL)
             self.out("")
+            if header and (fresh or first):
+                header()   # the test's Needs and Safety notes, under the label
+                self.gap()
+            first = False
             if done:
                 self.say(f"Already done: {message}", BODY)
                 self.out("")
@@ -875,7 +880,6 @@ class Runner:
         back from the next test, so start at this test's last step."""
         _, item = self.items[index]
         self.freshScreen()
-        self.showItem(index)
         previous = self.session["answers"].get(item["id"])
         # A test the operator hasn't answered (or one its own check answered
         # before) is checked again; if the check settles it, it gets a screen of
@@ -894,6 +898,8 @@ class Runner:
                 self.gap()
                 self.say(self.label(item["id"], 0), HEAD, LABEL)
                 self.out("")
+                self.showItem(index)
+                self.gap()
                 self.say(shown, BODY)
                 self.out("")
                 self.say(f"I've recorded this test as {done}.", BODY)
@@ -915,8 +921,16 @@ class Runner:
                                  start=start, history=history, canGoBack=canGoBack)
         if fromEnd and stepList:
             shown = show(len(stepList) - 1, range(len(stepList) - 1))
-        else:
+        elif stepList:
             shown = show()
+        else:
+            # No steps (one answered by its check before): the label and notes.
+            self.gap()
+            self.say(self.label(item["id"], 0), HEAD, LABEL)
+            self.out("")
+            self.showItem(index)
+            self.gap()
+            shown = []
         if shown == BACK:
             return index - 1
         pending = ""
